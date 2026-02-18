@@ -18,6 +18,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from screenrecord import platform_utils
 
@@ -54,14 +55,14 @@ class ScreenRecorder:
         self._config: dict = config
 
         # FFmpeg subprocess handle.
-        self._process: subprocess.Popen | None = None
-        self._current_output: Path | None = None
+        self._process: Optional[subprocess.Popen] = None
+        self._current_output: Optional[Path] = None
 
         # Threading.
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._manager_thread: threading.Thread | None = None
-        self._stderr_thread: threading.Thread | None = None
+        self._manager_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
 
         # Completed segment queue for downstream processing.
         self.completed_queue: queue.Queue[Path] = queue.Queue()
@@ -141,7 +142,7 @@ class ScreenRecorder:
             self._segments_completed,
         )
 
-    def get_completed_segment(self, timeout: float = 5.0) -> Path | None:
+    def get_completed_segment(self, timeout: float = 5.0) -> Optional[Path]:
         """Return the next completed segment path, or ``None``."""
         if self._stop_event.is_set() and self.completed_queue.empty():
             return None

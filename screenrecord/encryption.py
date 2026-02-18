@@ -11,6 +11,7 @@ import logging
 import os
 import struct
 from pathlib import Path
+from typing import Optional, Union
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -40,7 +41,7 @@ class FileEncryptor:
             [N  bytes encrypted_chunk (ciphertext + 16-byte GCM tag)]
     """
 
-    def __init__(self, key: bytes | None = None) -> None:
+    def __init__(self, key: Optional[bytes] = None) -> None:
         if key is None:
             key = self.generate_key()
             logger.info("Generated new AES-256 encryption key.")
@@ -65,7 +66,7 @@ class FileEncryptor:
         """Return 32 bytes of cryptographically secure random data (AES-256 key)."""
         return os.urandom(KEY_SIZE)
 
-    def save_key(self, path: str | Path) -> None:
+    def save_key(self, path: Union[str, Path]) -> None:
         """Save the key to *path*, base64-encoded, with restrictive permissions.
 
         On Unix the file permissions are set to owner-read-only (0o400).
@@ -88,7 +89,7 @@ class FileEncryptor:
         )
 
     @staticmethod
-    def load_key(path: str | Path) -> "FileEncryptor":
+    def load_key(path: Union[str, Path]) -> "FileEncryptor":
         """Load a base64-encoded key from *path* and return a new FileEncryptor."""
         path = Path(path)
         encoded = path.read_bytes().strip()
@@ -114,8 +115,8 @@ class FileEncryptor:
     # ------------------------------------------------------------------
     def encrypt_file(
         self,
-        input_path: str | Path,
-        output_path: str | Path | None = None,
+        input_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
     ) -> Path:
         """Encrypt *input_path* using AES-256-GCM chunked streaming.
 
@@ -189,8 +190,8 @@ class FileEncryptor:
     # ------------------------------------------------------------------
     def decrypt_file(
         self,
-        input_path: str | Path,
-        output_path: str | Path | None = None,
+        input_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
     ) -> Path:
         """Decrypt an encrypted file produced by *encrypt_file*.
 
@@ -257,7 +258,7 @@ class FileEncryptor:
     # ------------------------------------------------------------------
     # In-place encryption convenience
     # ------------------------------------------------------------------
-    def encrypt_in_place(self, file_path: str | Path) -> Path:
+    def encrypt_in_place(self, file_path: Union[str, Path]) -> Path:
         """Encrypt *file_path*, replacing the original with a ``.enc`` version.
 
         Procedure:

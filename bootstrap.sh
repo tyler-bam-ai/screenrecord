@@ -208,6 +208,7 @@ write_credentials() {
 
     # Write encryption key (skip if placeholder)
     if [ "$ENCRYPTION_KEY_B64" != "PASTE_KEY_HERE" ] && [ -n "$ENCRYPTION_KEY_B64" ]; then
+        rm -f "$INSTALL_DIR/encryption.key"
         echo "$ENCRYPTION_KEY_B64" | base64 -d > "$INSTALL_DIR/encryption.key"
         chmod 400 "$INSTALL_DIR/encryption.key"
         ENCRYPTION_KEY_PATH="${INSTALL_DIR}/encryption.key"

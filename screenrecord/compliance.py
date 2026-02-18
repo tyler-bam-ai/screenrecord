@@ -11,6 +11,7 @@ import logging
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class ComplianceManager:
     # ------------------------------------------------------------------
     # Audit logging
     # ------------------------------------------------------------------
-    def log_event(self, event_type: str, details: dict | None = None) -> dict:
+    def log_event(self, event_type: str, details: Optional[dict] = None) -> dict:
         """Write a JSON-line audit entry and return the record dict.
 
         Parameters
