@@ -397,6 +397,89 @@ check_screen_permission() {
     ok "Screen recording permission verified"
 }
 
+# ── Google Drive Verification ────────────────────────────────────────────────
+
+verify_google_drive() {
+    info "Verifying Google Drive access..."
+    DRIVE_CHECK=$(cd "$INSTALL_DIR" && python3 -c "
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+
+creds = Credentials.from_service_account_file(
+    '${INSTALL_DIR}/credentials.json',
+    scopes=['https://www.googleapis.com/auth/drive']
+)
+service = build('drive', 'v3', credentials=creds)
+# Try listing files in the root folder to verify access
+results = service.files().list(
+    q=\"'${GDRIVE_FOLDER_ID}' in parents\",
+    pageSize=1,
+    fields='files(id, name)'
+).execute()
+print('OK')
+" 2>&1)
+
+    if echo "$DRIVE_CHECK" | grep -q "OK"; then
+        ok "Google Drive access verified"
+    else
+        echo ""
+        echo "  ========================================================"
+        echo "  \xe2\x9c\x97 FATAL: Cannot access Google Drive."
+        echo ""
+        echo "    Check that the service account has access to the"
+        echo "    shared drive folder and that credentials are valid."
+        echo ""
+        echo "    Error: ${DRIVE_CHECK}"
+        echo "  ========================================================"
+        echo ""
+        exit 1
+    fi
+}
+
+# ── Post-Start Verification ──────────────────────────────────────────────────
+
+verify_service_running() {
+    info "Waiting for service to start recording..."
+    sleep 8
+
+    # Check if the process is running
+    if ! launchctl list 2>/dev/null | grep -q "$PLIST_LABEL"; then
+        echo ""
+        echo "  ========================================================"
+        echo "  \xe2\x9c\x97 FATAL: Service failed to start."
+        echo ""
+        echo "    Check logs: cat ${INSTALL_DIR}/logs/stderr.log"
+        echo "  ========================================================"
+        echo ""
+        exit 1
+    fi
+
+    # Check if a recording file is being created
+    RECORDING_COUNT=$(ls -1 "$INSTALL_DIR/recordings/"*.mp4 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$RECORDING_COUNT" -gt 0 ]; then
+        ok "Recording in progress (${RECORDING_COUNT} file(s) in recordings/)"
+    else
+        # Check stderr for errors
+        if [ -f "$INSTALL_DIR/logs/stderr.log" ]; then
+            ERRORS=$(tail -5 "$INSTALL_DIR/logs/stderr.log" 2>/dev/null)
+            if echo "$ERRORS" | grep -qi "permission\|error\|fatal"; then
+                echo ""
+                echo "  ========================================================"
+                echo "  \xe2\x9c\x97 FATAL: Service started but recording failed."
+                echo ""
+                echo "    Recent errors:"
+                echo "    $ERRORS"
+                echo ""
+                echo "    Check full logs: cat ${INSTALL_DIR}/logs/stderr.log"
+                echo "  ========================================================"
+                echo ""
+                exit 1
+            fi
+        fi
+        info "Service running (recording file not yet created — may take a moment)"
+    fi
+}
+
 # ── Start Service ────────────────────────────────────────────────────────────
 
 start_service() {
@@ -440,8 +523,10 @@ main() {
     write_config
     install_dependencies
     record_consent
+    verify_google_drive
     setup_autostart
     start_service
+    verify_service_running
 
     echo ""
     echo "  ────────────────────────────────────────────"
@@ -450,10 +535,11 @@ main() {
     echo "    Computer:      ${COMPUTER_NAME}"
     echo "    Install dir:   ${INSTALL_DIR}"
     echo "    Segment mode:  ${SEGMENT_LABEL}"
-    echo "    Status:        Recording started"
+    echo "    Status:        Recording & uploading"
     echo ""
     echo "    The service will start automatically on login."
     echo "    Logs: ${INSTALL_DIR}/logs/"
+    echo "    You can close this terminal window."
     echo "  ────────────────────────────────────────────"
     echo ""
 }
