@@ -397,11 +397,24 @@ YAML
 
 install_dependencies() {
     info "Installing Python dependencies..."
-    if [ -f "$INSTALL_DIR/requirements.txt" ]; then
-        "$PYTHON3_BIN" -m pip install -r "$INSTALL_DIR/requirements.txt" --quiet 2>/dev/null
+
+    # Use the lightweight core requirements (Google Drive, encryption, config only).
+    # The full requirements.txt includes heavy ML/RAG packages that need compilers.
+    REQ_FILE="$INSTALL_DIR/requirements-core.txt"
+    if [ ! -f "$REQ_FILE" ]; then
+        REQ_FILE="$INSTALL_DIR/requirements.txt"
+    fi
+
+    if [ -f "$REQ_FILE" ]; then
+        PIP_OUTPUT=$("$PYTHON3_BIN" -m pip install -r "$REQ_FILE" 2>&1)
+        PIP_EXIT=$?
+        if [ $PIP_EXIT -ne 0 ]; then
+            echo "$PIP_OUTPUT" | tail -20
+            fail "Failed to install Python dependencies (exit code $PIP_EXIT)"
+        fi
         ok "Dependencies installed"
     else
-        info "No requirements.txt found, skipping"
+        fail "No requirements file found at $INSTALL_DIR"
     fi
 }
 
