@@ -7,6 +7,7 @@ after confirmed successful upload.
 import logging
 import time
 from pathlib import Path
+from typing import Union
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -149,7 +150,7 @@ class DriveUploader:
     # ------------------------------------------------------------------
 
     def upload_file(
-        self, local_path: str | Path, delete_after: bool = True
+        self, local_path: Union[str, Path], delete_after: bool = True
     ) -> str:
         """Upload a single file to the employee folder on Google Drive.
 
@@ -229,7 +230,7 @@ class DriveUploader:
     # ------------------------------------------------------------------
 
     def upload_with_retry(
-        self, local_path: str | Path, delete_after: bool = True
+        self, local_path: Union[str, Path], delete_after: bool = True
     ) -> str:
         """Upload a file with automatic retry on transient failures.
 
