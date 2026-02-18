@@ -1,0 +1,28 @@
+# Screen recording
+watchdog>=3.0.0
+
+# Google Drive upload
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.1.0
+
+# Video analysis
+google-genai>=1.0.0
+openai>=1.0.0
+httpx>=0.25.0
+
+# RAG system
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# Configuration
+pyyaml>=6.0
+
+# Encryption (HIPAA compliance)
+cryptography>=41.0.0
+
+# Dashboard
+flask>=3.0.0
+
+# Utilities
+psutil>=5.9.0

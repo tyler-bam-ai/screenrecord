@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.screenrecord.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>python3</string>
+        <string>/path/to/run.py</string>
+        <string>--config</string>
+        <string>/path/to/config.yaml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/screenrecord</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/screenrecord.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/screenrecord.stderr.log</string>
+</dict>
+</plist>

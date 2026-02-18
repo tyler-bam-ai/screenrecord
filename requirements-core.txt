@@ -1,0 +1,15 @@
+# Core dependencies for record + upload mode (no analysis/RAG)
+
+# Google Drive upload
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.1.0
+
+# Configuration
+pyyaml>=6.0
+
+# Encryption (HIPAA compliance)
+cryptography>=41.0.0
+
+# Utilities
+psutil>=5.9.0

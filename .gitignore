@@ -1,0 +1,39 @@
+# Credentials & secrets
+*.json
+!config.example.yaml
+encryption.key
+*.key
+
+# Client-specific installers (contain embedded credentials)
+install_texas_sinus_center.sh
+install_texas_sinus.sh
+install.sh
+
+# Build artifacts
+screenrecord.zip
+*.zip
+
+# Runtime files
+audit.log
+screenrecord.log
+consent_records.json
+test_config.yaml
+recordings/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# Archive of old versions
+Archive/
+
+# IDE
+.vscode/
+.idea/

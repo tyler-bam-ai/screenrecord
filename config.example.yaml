@@ -1,0 +1,57 @@
+# Screen Recorder Configuration
+# Copy this file to config.yaml and fill in your values
+
+# Client / practice name (creates a top-level folder on Drive)
+client_name: "Texas Sinus Center"
+
+# Employee information
+employee_name: "John Smith"
+# computer_name is auto-detected if left blank
+computer_name: ""
+
+# Recording settings
+recording:
+  fps: 5                        # Frames per second (5 = low CPU, sufficient for monitoring)
+  crf: 28                       # Quality (18=high, 28=low, higher = smaller files)
+  segment_duration: 3600         # Seconds per segment (3600 = 60 minutes)
+  output_dir: "recordings"       # Local temp directory for recordings
+  # System audio capture device (platform-specific)
+  # macOS: Install BlackHole (https://existential.audio/blackhole/) and set to "BlackHole 2ch"
+  # Windows: Usually "Stereo Mix" or "CABLE Output (VB-Audio Virtual Cable)"
+  # Leave blank to auto-detect or record without audio
+  audio_device: ""
+
+# Google Drive settings
+google_drive:
+  # Path to your service account credentials JSON file
+  credentials_file: "credentials.json"
+  # ID of the root folder where all recordings will be stored
+  # Create a folder in Google Drive, right-click > Share with service account email
+  # The folder ID is the last part of the URL when you open the folder
+  root_folder_id: ""
+
+# Encryption settings (HIPAA compliance)
+encryption:
+  # Path to the AES-256 encryption key file (base64-encoded 32 bytes)
+  # Generate a key: python3 -c "from screenrecord.encryption import FileEncryptor; e=FileEncryptor(); e.save_key('encryption.key')"
+  # Leave blank to disable encryption
+  key_file: "encryption.key"
+
+# Video analysis settings
+analysis:
+  enabled: true
+  # Gemini API key (from https://aistudio.google.com/apikey)
+  gemini_api_key: ""
+  # xAI API key for Grok (from https://console.x.ai/)
+  xai_api_key: ""
+  # OpenRouter API key for Opus synthesis (from https://openrouter.ai/keys)
+  openrouter_api_key: ""
+
+# RAG system settings
+rag:
+  enabled: true
+  db_path: "rag_db"              # Local path for ChromaDB storage
+  # How often to run Opus synthesis (in seconds, 3600 = every hour)
+  synthesis_interval: 3600
+  # Path where the "operations bible" document is stored locally before upload
+  bible_path: "company_operations_bible.md"
