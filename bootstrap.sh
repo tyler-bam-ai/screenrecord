@@ -80,17 +80,87 @@ detect_os() {
 
 # ── Prerequisites ────────────────────────────────────────────────────────────
 
+# Global: path to a real python3 binary (set by find_real_python3)
+PYTHON3_BIN=""
+
+find_real_python3() {
+    # Check common locations for a REAL python3 binary.
+    # IMPORTANT: Do NOT use /usr/bin/python3 on macOS — it is an Xcode CLT
+    # shim that pops up a "Install Developer Tools" dialog on fresh machines.
+    for p in /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+        if [ -x "$p" ]; then
+            PYTHON3_BIN="$p"
+            return 0
+        fi
+    done
+
+    # Check python.org framework installs
+    FRAMEWORK_PY=$(ls -1 /Library/Frameworks/Python.framework/Versions/3.*/bin/python3 2>/dev/null | sort -V | tail -1)
+    if [ -n "${FRAMEWORK_PY:-}" ] && [ -x "$FRAMEWORK_PY" ]; then
+        PYTHON3_BIN="$FRAMEWORK_PY"
+        return 0
+    fi
+
+    # Only use /usr/bin/python3 if Xcode CLT is actually installed (shim is safe then)
+    if xcode-select -p >/dev/null 2>&1 && [ -x /usr/bin/python3 ]; then
+        PYTHON3_BIN="/usr/bin/python3"
+        return 0
+    fi
+
+    return 1
+}
+
+install_python() {
+    info "Python not found — downloading from python.org..."
+
+    PYTHON_VERSION="3.11.9"
+    PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
+    PYTHON_PKG="/tmp/python-${PYTHON_VERSION}.pkg"
+
+    curl -sL "$PYTHON_PKG_URL" -o "$PYTHON_PKG"
+
+    if [ ! -s "$PYTHON_PKG" ]; then
+        rm -f "$PYTHON_PKG"
+        fail "Failed to download Python installer from python.org"
+    fi
+
+    info "Installing Python ${PYTHON_VERSION} (you may be prompted for your password)..."
+    sudo installer -pkg "$PYTHON_PKG" -target / >/dev/null 2>&1
+    INSTALL_RESULT=$?
+    rm -f "$PYTHON_PKG"
+
+    if [ $INSTALL_RESULT -ne 0 ]; then
+        fail "Python installation failed. Please install manually from https://python.org"
+    fi
+
+    # Install SSL certificates (needed for HTTPS with python.org builds)
+    /Library/Frameworks/Python.framework/Versions/*/bin/python3 -m pip install --upgrade certifi >/dev/null 2>&1 || true
+
+    # Refresh: python.org .pkg creates /usr/local/bin/python3
+    if find_real_python3; then
+        ok "Python ${PYTHON_VERSION} installed ($PYTHON3_BIN)"
+    else
+        fail "Python was installed but could not be found. Try reopening Terminal."
+    fi
+}
+
 check_python() {
-    if command -v python3 &>/dev/null; then
-        PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    if find_real_python3; then
+        PY_VERSION=$("$PYTHON3_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
         PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
         PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-        if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 8 ]; then
-            ok "Python $PY_VERSION"
+        if [ -n "${PY_MAJOR:-}" ] && [ "${PY_MAJOR:-0}" -ge 3 ] 2>/dev/null && [ "${PY_MINOR:-0}" -ge 8 ] 2>/dev/null; then
+            ok "Python $PY_VERSION ($PYTHON3_BIN)"
             return 0
         fi
     fi
-    fail "Python 3.8+ is required but not found. Install from https://python.org"
+
+    # Python not found or too old — auto-install on macOS
+    if [ "$OS" = "macos" ]; then
+        install_python
+    else
+        fail "Python 3.8+ is required but not found. Install from https://python.org"
+    fi
 }
 
 check_ffmpeg() {
@@ -99,28 +169,53 @@ check_ffmpeg() {
         return 0
     fi
 
-    info "FFmpeg not found, attempting to install..."
+    info "FFmpeg not found, installing..."
+
     if [ "$OS" = "macos" ]; then
+        # Try Homebrew if it's already installed (don't install Homebrew just for FFmpeg)
         if command -v brew &>/dev/null; then
             brew install ffmpeg --quiet 2>/dev/null
             if command -v ffmpeg &>/dev/null; then
                 ok "FFmpeg installed via Homebrew"
                 return 0
             fi
-        else
-            info "Homebrew not found, attempting to install Homebrew first..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-            # Add brew to PATH for this session (Apple Silicon + Intel)
-            if [ -f /opt/homebrew/bin/brew ]; then
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            elif [ -f /usr/local/bin/brew ]; then
-                eval "$(/usr/local/bin/brew shellenv)"
+        fi
+
+        # Download a static FFmpeg binary (no Xcode CLT required)
+        info "Downloading static FFmpeg binary..."
+        FFMPEG_ZIP="/tmp/ffmpeg_static_$$.zip"
+        curl -sL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o "$FFMPEG_ZIP"
+
+        if [ -s "$FFMPEG_ZIP" ]; then
+            FFMPEG_TMPDIR=$(mktemp -d /tmp/ffmpeg_extract_XXXXXX)
+            unzip -qo "$FFMPEG_ZIP" -d "$FFMPEG_TMPDIR" 2>/dev/null
+            if [ -f "$FFMPEG_TMPDIR/ffmpeg" ]; then
+                sudo mkdir -p /usr/local/bin
+                sudo mv "$FFMPEG_TMPDIR/ffmpeg" /usr/local/bin/ffmpeg
+                sudo chmod 755 /usr/local/bin/ffmpeg
+                sudo xattr -rd com.apple.quarantine /usr/local/bin/ffmpeg 2>/dev/null || true
+                rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
+                if command -v ffmpeg &>/dev/null; then
+                    ok "FFmpeg installed to /usr/local/bin/ffmpeg"
+                    return 0
+                fi
             fi
-            brew install ffmpeg --quiet 2>/dev/null
-            if command -v ffmpeg &>/dev/null; then
-                ok "FFmpeg installed via Homebrew"
-                return 0
-            fi
+            rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
+        fi
+        rm -f "$FFMPEG_ZIP"
+
+        # Last resort: install Homebrew + FFmpeg (may trigger Xcode CLT)
+        info "Static download failed — installing via Homebrew..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+        if [ -f /opt/homebrew/bin/brew ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [ -f /usr/local/bin/brew ]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
+        brew install ffmpeg --quiet 2>/dev/null
+        if command -v ffmpeg &>/dev/null; then
+            ok "FFmpeg installed via Homebrew"
+            return 0
         fi
     elif [ "$OS" = "linux" ]; then
         if command -v apt-get &>/dev/null; then
@@ -264,7 +359,7 @@ YAML
 install_dependencies() {
     info "Installing Python dependencies..."
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
-        pip3 install -r "$INSTALL_DIR/requirements.txt" --quiet 2>/dev/null
+        "$PYTHON3_BIN" -m pip install -r "$INSTALL_DIR/requirements.txt" --quiet 2>/dev/null
         ok "Dependencies installed"
     else
         info "No requirements.txt found, skipping"
@@ -306,7 +401,7 @@ setup_autostart_macos() {
     <string>${PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$(which python3)</string>
+        <string>${PYTHON3_BIN}</string>
         <string>-m</string>
         <string>screenrecord</string>
         <string>--config</string>
@@ -406,7 +501,7 @@ check_screen_permission() {
 
 verify_google_drive() {
     info "Verifying Google Drive access..."
-    DRIVE_CHECK=$(cd "$INSTALL_DIR" && python3 -c "
+    DRIVE_CHECK=$(cd "$INSTALL_DIR" && "$PYTHON3_BIN" -c "
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -501,7 +596,7 @@ start_service() {
         launchctl start "$PLIST_LABEL" 2>/dev/null || true
     else
         # Fallback: start directly in background
-        cd "$INSTALL_DIR" && nohup python3 -m screenrecord --config "$INSTALL_DIR/config.yaml" $EXTRA_ARGS \
+        cd "$INSTALL_DIR" && nohup "$PYTHON3_BIN" -m screenrecord --config "$INSTALL_DIR/config.yaml" $EXTRA_ARGS \
             >> "$INSTALL_DIR/logs/stdout.log" 2>> "$INSTALL_DIR/logs/stderr.log" &
     fi
     ok "Service started"
