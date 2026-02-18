@@ -342,6 +342,61 @@ setup_autostart() {
     fi
 }
 
+# ── Screen Recording Permission Check ────────────────────────────────────────
+
+check_screen_permission() {
+    if [ "$OS" != "macos" ]; then
+        return 0
+    fi
+
+    info "Verifying screen recording permission..."
+    SCREEN_IDX=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | \
+        awk '/Capture screen/{gsub(/.*\[/,""); gsub(/\].*/,""); print; exit}')
+    SCREEN_IDX="${SCREEN_IDX:-1}"
+
+    TEST_FILE=$(mktemp /tmp/sr_perm_test_XXXXXX).mp4
+    ffmpeg -y -f avfoundation -pixel_format uyvy422 -framerate 30 \
+        -capture_cursor 1 -i "${SCREEN_IDX}:none" \
+        -t 1 -vf fps=5 -c:v libx264 -preset ultrafast -crf 28 \
+        -pix_fmt yuv420p "$TEST_FILE" >/dev/null 2>&1
+    RESULT=$?
+
+    if [ $RESULT -ne 0 ] || [ ! -s "$TEST_FILE" ]; then
+        rm -f "$TEST_FILE"
+        echo ""
+        echo "  ========================================================"
+        echo "  \xe2\x9c\x97 FATAL: Screen recording permission is NOT granted."
+        echo ""
+        echo "    Go to: System Settings \xe2\x86\x92 Privacy & Security"
+        echo "           \xe2\x86\x92 Screen Recording \xe2\x86\x92 Enable Terminal"
+        echo ""
+        echo "    Then re-run this installer."
+        echo "  ========================================================"
+        echo ""
+        exit 1
+    fi
+
+    # Check file is large enough to be a real capture (not empty/black)
+    FILE_SIZE=$(wc -c < "$TEST_FILE" | tr -d ' ')
+    rm -f "$TEST_FILE"
+
+    if [ "$FILE_SIZE" -lt 1000 ]; then
+        echo ""
+        echo "  ========================================================"
+        echo "  \xe2\x9c\x97 FATAL: Screen recording permission is NOT granted."
+        echo ""
+        echo "    Go to: System Settings \xe2\x86\x92 Privacy & Security"
+        echo "           \xe2\x86\x92 Screen Recording \xe2\x86\x92 Enable Terminal"
+        echo ""
+        echo "    Then re-run this installer."
+        echo "  ========================================================"
+        echo ""
+        exit 1
+    fi
+
+    ok "Screen recording permission verified"
+}
+
 # ── Start Service ────────────────────────────────────────────────────────────
 
 start_service() {
@@ -375,6 +430,7 @@ main() {
     detect_os
     check_python
     check_ffmpeg
+    check_screen_permission
 
     detect_employee_name
     detect_computer_name

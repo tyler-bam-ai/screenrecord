@@ -133,6 +133,26 @@ class ScreenRecordService:
             "computer_name": computer_name,
         })
 
+        # Verify screen recording permission before starting
+        from . import platform_utils
+        if not platform_utils.check_screen_recording_permission():
+            msg = (
+                "\n"
+                "========================================================\n"
+                "  FATAL: Screen recording permission is NOT granted.\n"
+                "\n"
+                "  Go to: System Settings → Privacy & Security\n"
+                "         → Screen Recording → Enable python3 / Terminal\n"
+                "\n"
+                "  Then restart the service:\n"
+                "    launchctl unload ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
+                "    launchctl load ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
+                "========================================================"
+            )
+            logger.critical(msg)
+            print(msg, flush=True)
+            raise RuntimeError("Screen recording permission not granted. See above for instructions.")
+
         # Start the screen recorder
         self.recorder.start()
         logger.info("Screen recorder started")

@@ -57,6 +57,83 @@ def check_ffmpeg_installed() -> bool:
     return True
 
 
+def check_screen_recording_permission() -> bool:
+    """Check if screen recording permission is granted on macOS.
+
+    Performs a 1-second test capture with FFmpeg. If the capture fails or
+    produces no output, screen recording permission is likely not granted.
+
+    Returns True if permission is granted, False otherwise.
+    On non-macOS platforms, always returns True.
+    """
+    if platform.system() != MACOS:
+        return True
+
+    import tempfile
+    test_path = os.path.join(tempfile.gettempdir(), "sr_permission_test.mp4")
+
+    try:
+        screen_idx = _detect_screen_device_index()
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "avfoundation",
+                "-pixel_format", "uyvy422",
+                "-framerate", "30",
+                "-capture_cursor", "1",
+                "-i", f"{screen_idx}:none",
+                "-t", "1",
+                "-vf", "fps=5",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                test_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        if result.returncode != 0:
+            stderr_lower = result.stderr.lower()
+            if "permission" in stderr_lower or "not granted" in stderr_lower:
+                logger.error("Screen recording permission denied by macOS.")
+                return False
+            # Other FFmpeg errors may not be permission-related
+            logger.warning("FFmpeg test capture failed (exit %d): %s", result.returncode, result.stderr[-200:])
+            return False
+
+        # Check if file was created and has reasonable size
+        if os.path.exists(test_path):
+            size = os.path.getsize(test_path)
+            os.remove(test_path)
+            if size > 1000:  # A valid 1-sec capture should be at least a few KB
+                logger.info("Screen recording permission verified.")
+                return True
+            else:
+                logger.error("Test capture produced empty output — screen recording permission likely not granted.")
+                return False
+        else:
+            logger.error("Test capture produced no file — screen recording permission likely not granted.")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg test capture timed out — screen recording permission may not be granted.")
+        try:
+            os.remove(test_path)
+        except OSError:
+            pass
+        return False
+    except Exception:
+        logger.exception("Failed to verify screen recording permission.")
+        try:
+            os.remove(test_path)
+        except OSError:
+            pass
+        return False
+
+
 def get_ffmpeg_version() -> Optional[str]:
     try:
         result = subprocess.run(
