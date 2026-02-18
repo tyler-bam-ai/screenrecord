@@ -167,7 +167,7 @@ install_files() {
 
     # Download and extract project (uses GitHub token for private repo)
     info "Downloading from GitHub..."
-    TMPZIP=$(mktemp /tmp/screenrecord_XXXXXX.zip)
+    TMPZIP=$(mktemp /tmp/screenrecord_XXXXXX).zip
     if command -v curl &>/dev/null; then
         curl -sL -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "$DOWNLOAD_URL" -o "$TMPZIP"
     elif command -v wget &>/dev/null; then
