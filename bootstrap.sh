@@ -351,15 +351,18 @@ check_screen_permission() {
 
     info "Verifying screen recording permission..."
     SCREEN_IDX=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | \
-        awk '/Capture screen/{gsub(/.*\[/,""); gsub(/\].*/,""); print; exit}')
+        awk '/Capture screen/{gsub(/.*\[/,""); gsub(/\].*/,""); print; exit}' || true)
     SCREEN_IDX="${SCREEN_IDX:-1}"
 
     TEST_FILE=$(mktemp /tmp/sr_perm_test_XXXXXX).mp4
-    ffmpeg -y -f avfoundation -pixel_format uyvy422 -framerate 30 \
+    if ffmpeg -y -f avfoundation -pixel_format uyvy422 -framerate 30 \
         -capture_cursor 1 -i "${SCREEN_IDX}:none" \
         -t 1 -vf fps=5 -c:v libx264 -preset ultrafast -crf 28 \
-        -pix_fmt yuv420p "$TEST_FILE" >/dev/null 2>&1
-    RESULT=$?
+        -pix_fmt yuv420p "$TEST_FILE" >/dev/null 2>&1; then
+        RESULT=0
+    else
+        RESULT=1
+    fi
 
     if [ $RESULT -ne 0 ] || [ ! -s "$TEST_FILE" ]; then
         rm -f "$TEST_FILE"
