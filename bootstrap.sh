@@ -221,27 +221,40 @@ check_ffmpeg() {
             fi
         fi
 
-        # Download static FFmpeg binary into install dir (no sudo, no Xcode CLT)
-        info "Downloading static FFmpeg binary..."
-        FFMPEG_ZIP="/tmp/ffmpeg_static_$$.zip"
-        curl -sL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o "$FFMPEG_ZIP"
+        # Method 1: Use imageio-ffmpeg pip package (most reliable — downloads from PyPI)
+        info "Installing FFmpeg via Python package..."
+        "$PYTHON3_BIN" -m pip install imageio-ffmpeg --quiet 2>/dev/null
+        FFMPEG_EXE=$("$PYTHON3_BIN" -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" 2>/dev/null)
+        if [ -n "${FFMPEG_EXE:-}" ] && [ -x "$FFMPEG_EXE" ]; then
+            cp "$FFMPEG_EXE" "$INSTALL_DIR/bin/ffmpeg"
+            chmod 755 "$INSTALL_DIR/bin/ffmpeg"
+            export PATH="$INSTALL_DIR/bin:$PATH"
+            ok "FFmpeg installed ($INSTALL_DIR/bin/ffmpeg)"
+            return 0
+        fi
 
-        if [ -s "$FFMPEG_ZIP" ]; then
-            FFMPEG_TMPDIR=$(mktemp -d /tmp/ffmpeg_extract_XXXXXX)
-            unzip -qo "$FFMPEG_ZIP" -d "$FFMPEG_TMPDIR" 2>/dev/null
-            if [ -f "$FFMPEG_TMPDIR/ffmpeg" ]; then
-                mv "$FFMPEG_TMPDIR/ffmpeg" "$INSTALL_DIR/bin/ffmpeg"
-                chmod 755 "$INSTALL_DIR/bin/ffmpeg"
-                xattr -rd com.apple.quarantine "$INSTALL_DIR/bin/ffmpeg" 2>/dev/null || true
-                export PATH="$INSTALL_DIR/bin:$PATH"
-                rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
-                if command -v ffmpeg &>/dev/null; then
+        # Method 2: Direct static binary download (backup)
+        info "Trying direct FFmpeg download..."
+        FFMPEG_ZIP="/tmp/ffmpeg_static_$$.zip"
+        for FFMPEG_URL in \
+            "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" \
+            "https://evermeet.cx/ffmpeg/getrelease/zip"; do
+            curl -sL -A "Mozilla/5.0" "$FFMPEG_URL" -o "$FFMPEG_ZIP" 2>/dev/null
+            if [ -s "$FFMPEG_ZIP" ]; then
+                FFMPEG_TMPDIR=$(mktemp -d /tmp/ffmpeg_extract_XXXXXX)
+                unzip -qo "$FFMPEG_ZIP" -d "$FFMPEG_TMPDIR" 2>/dev/null
+                if [ -f "$FFMPEG_TMPDIR/ffmpeg" ]; then
+                    mv "$FFMPEG_TMPDIR/ffmpeg" "$INSTALL_DIR/bin/ffmpeg"
+                    chmod 755 "$INSTALL_DIR/bin/ffmpeg"
+                    xattr -rd com.apple.quarantine "$INSTALL_DIR/bin/ffmpeg" 2>/dev/null || true
+                    export PATH="$INSTALL_DIR/bin:$PATH"
+                    rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
                     ok "FFmpeg installed ($INSTALL_DIR/bin/ffmpeg)"
                     return 0
                 fi
+                rm -rf "$FFMPEG_TMPDIR"
             fi
-            rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
-        fi
+        done
         rm -f "$FFMPEG_ZIP"
     elif [ "$OS" = "linux" ]; then
         if command -v apt-get &>/dev/null; then
