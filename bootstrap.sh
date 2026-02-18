@@ -249,6 +249,9 @@ analysis:
   xai_api_key: "${XAI_API_KEY}"
   openrouter_api_key: "${OPENROUTER_API_KEY}"
 
+google_sheets:
+  sheet_id: ""
+
 rag:
   enabled: false
   db_path: "${INSTALL_DIR}/rag_db"

@@ -9,6 +9,7 @@ import logging
 import os
 import queue
 import signal
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,10 +37,12 @@ class ScreenRecordService:
         self.compliance = None
         self.heartbeat = None
         self.update_checker = None
+        self.sheets_backend = None
 
         # Pipeline thread
         self._upload_thread: Optional[threading.Thread] = None
         self._update_thread: Optional[threading.Thread] = None
+        self._command_thread: Optional[threading.Thread] = None
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -174,6 +177,26 @@ class ScreenRecordService:
             logger.exception("Failed to start heartbeat sender; continuing without it")
             self.heartbeat = None
 
+        # Initialize Google Sheets backend (for dashboard)
+        try:
+            from .sheets_backend import SheetsBackend
+            self.sheets_backend = SheetsBackend(self.config)
+            sheet_id = self.sheets_backend.ensure_sheet()
+            logger.info("Google Sheets backend ready (sheet_id: %s)", sheet_id)
+        except Exception:
+            logger.exception("Failed to initialize Sheets backend; continuing without it")
+            self.sheets_backend = None
+
+        # Start command polling thread (checks for restart commands)
+        if self.sheets_backend is not None:
+            self._command_thread = threading.Thread(
+                target=self._command_poll_loop,
+                name="command-poller",
+                daemon=True,
+            )
+            self._command_thread.start()
+            logger.info("Command poller started")
+
         # Start periodic RAG synthesis if enabled
         if self.rag_system is not None:
             self.rag_system.start_periodic_synthesis()
@@ -210,6 +233,52 @@ class ScreenRecordService:
                         self.heartbeat.set_status("updated - restart pending")
             except Exception:
                 logger.exception("Error during update check")
+
+    def _command_poll_loop(self):
+        """Poll Google Sheets for restart commands and update machine status every 30 seconds."""
+        poll_interval = 30
+        computer_name = self.config.get("computer_name", "Unknown")
+        employee_name = self.config.get("employee_name", "Unknown")
+        client_name = self.config.get("client_name", "Unknown")
+        while not self.stop_event.is_set():
+            self.stop_event.wait(timeout=poll_interval)
+            if self.stop_event.is_set():
+                break
+            try:
+                if self.sheets_backend is None:
+                    continue
+                # Update machine status in Sheets
+                segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
+                uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
+                self.sheets_backend.update_machine(
+                    computer_name=computer_name,
+                    employee_name=employee_name,
+                    client_name=client_name,
+                    status="recording",
+                    segments_uploaded=segments,
+                    uptime_hours=round(uptime, 2),
+                )
+                commands = self.sheets_backend.check_commands(computer_name)
+                for cmd in commands:
+                    if cmd["command"] in ("restart", "stop"):
+                        logger.info(
+                            "Received '%s' command from dashboard (row %d).",
+                            cmd["command"],
+                            cmd["row_number"],
+                        )
+                        self.sheets_backend.mark_command_executed(cmd["row_number"])
+                        if cmd["command"] == "restart":
+                            logger.info("Restarting service per remote command...")
+                            self.stop()
+                            os.execv(
+                                sys.executable,
+                                [sys.executable] + sys.argv,
+                            )
+                        elif cmd["command"] == "stop":
+                            logger.info("Stopping service per remote command...")
+                            self.stop()
+            except Exception:
+                logger.exception("Error polling for commands")
 
     def _processing_pipeline(self):
         """Process completed segments: analyze -> encrypt -> upload -> index -> cleanup.
@@ -313,6 +382,19 @@ class ScreenRecordService:
                         })
                     if self.heartbeat:
                         self.heartbeat.increment_segments()
+                    # Log recording to Google Sheets dashboard
+                    if self.sheets_backend:
+                        try:
+                            size_mb = os.path.getsize(upload_path) / (1024 * 1024)
+                            self.sheets_backend.log_recording(
+                                computer_name=self.config.get("computer_name", "Unknown"),
+                                employee_name=self.config.get("employee_name", "Unknown"),
+                                filename=upload_filename,
+                                drive_file_id=drive_file_id,
+                                size_mb=size_mb,
+                            )
+                        except Exception:
+                            logger.exception("Failed to log recording to Sheets")
                 else:
                     logger.error(
                         "Upload returned no file ID for %s; keeping local file",

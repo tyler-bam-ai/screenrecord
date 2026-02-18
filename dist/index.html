@@ -1,0 +1,1654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Recording Control Panel</title>
+<style>
+/* ================================================================
+   RESET & BASE
+   ================================================================ */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --border: #334155;
+  --border-faint: rgba(51, 65, 85, 0.5);
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --text-bright: #f8fafc;
+  --green: #22c55e;
+  --yellow: #eab308;
+  --red: #ef4444;
+  --blue: #3b82f6;
+  --blue-hover: #2563eb;
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+html { font-size: 14px; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* ================================================================
+   ANIMATIONS
+   ================================================================ */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ================================================================
+   LOGIN SCREEN
+   ================================================================ */
+#login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-box {
+  width: 100%;
+  max-width: 380px;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  padding: 48px 40px;
+  border: 1px solid var(--border);
+}
+
+.login-box h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+}
+
+.login-box .subtitle {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-bottom: 28px;
+}
+
+.login-box input[type="password"] {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s;
+  margin-bottom: 16px;
+}
+
+.login-box input[type="password"]:focus {
+  border-color: var(--blue);
+}
+
+.login-box .login-error {
+  color: var(--red);
+  font-size: 0.8rem;
+  text-align: center;
+  margin-bottom: 12px;
+  display: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  text-decoration: none;
+  line-height: 1.4;
+}
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--blue);
+  color: #fff;
+  width: 100%;
+}
+
+.btn-primary:hover:not(:disabled) { background: var(--blue-hover); }
+
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  border-radius: 5px;
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.btn-danger-outline {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--red);
+}
+
+.btn-link {
+  background: transparent;
+  color: var(--blue);
+  padding: 5px 10px;
+  border: none;
+}
+
+.btn-link:hover { text-decoration: underline; }
+
+/* ================================================================
+   DASHBOARD LAYOUT
+   ================================================================ */
+#dashboard-screen { display: none; }
+
+.dashboard-wrap {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 28px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.header h1 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.header-right .sep {
+  color: var(--border);
+}
+
+.header-right a {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.header-right a:hover { color: var(--text); }
+
+.refresh-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.refresh-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse-green 2s infinite;
+}
+
+/* ================================================================
+   SUMMARY CARDS
+   ================================================================ */
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.summary-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 18px 22px;
+  border: 1px solid var(--border);
+  transition: transform 0.15s, box-shadow 0.15s;
+  animation: fade-in 0.4s ease-out both;
+}
+
+.summary-card:nth-child(2) { animation-delay: 0.05s; }
+.summary-card:nth-child(3) { animation-delay: 0.1s; }
+.summary-card:nth-child(4) { animation-delay: 0.15s; }
+
+.summary-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.summary-card .label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.summary-card .value {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+/* ================================================================
+   SKELETON LOADERS
+   ================================================================ */
+.skeleton {
+  background: linear-gradient(90deg, var(--card) 25%, #283548 50%, var(--card) 75%);
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+.skeleton-text {
+  height: 14px;
+  width: 60%;
+  margin-bottom: 8px;
+}
+
+.skeleton-value {
+  height: 32px;
+  width: 40%;
+}
+
+.skeleton-row {
+  height: 44px;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+/* ================================================================
+   SECTION HEADERS
+   ================================================================ */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.section-header h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.section-header .count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--blue);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 20px;
+  margin-left: 8px;
+}
+
+/* Search / filter */
+.search-box {
+  position: relative;
+}
+
+.search-box input {
+  padding: 8px 14px 8px 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  outline: none;
+  width: 240px;
+  transition: border-color 0.2s, width 0.2s;
+}
+
+.search-box input:focus {
+  border-color: var(--blue);
+  width: 300px;
+}
+
+.search-box .search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+/* ================================================================
+   TABLES
+   ================================================================ */
+.table-wrap {
+  background: var(--card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  margin-bottom: 32px;
+  animation: fade-in 0.5s ease-out both;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 700px;
+}
+
+thead th {
+  text-align: left;
+  padding: 11px 16px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+tbody td {
+  padding: 11px 16px;
+  font-size: 0.88rem;
+  border-bottom: 1px solid var(--border-faint);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+tbody tr { transition: background 0.1s; }
+tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
+
+.mono {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+/* Status dot */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.green {
+  background: var(--green);
+  animation: pulse-green 2s infinite;
+}
+
+.status-dot.yellow { background: var(--yellow); }
+.status-dot.red { background: var(--red); }
+
+.status-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-label.green { color: var(--green); }
+.status-label.yellow { color: var(--yellow); }
+.status-label.red { color: var(--red); }
+
+/* Actions */
+.actions-cell {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+}
+
+.empty-state .empty-icon {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.empty-state h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-muted);
+}
+
+.empty-state p {
+  font-size: 0.85rem;
+}
+
+/* Error state */
+.error-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--red);
+}
+
+.error-state h3 {
+  font-size: 1rem;
+  margin-bottom: 6px;
+}
+
+.error-state p {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ================================================================
+   MODAL OVERLAY
+   ================================================================ */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fade-in 0.2s ease-out;
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 900px;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slide-up 0.3s ease-out;
+  position: relative;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.modal-close:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.08);
+}
+
+.modal-body {
+  padding: 24px;
+}
+
+.modal-body video {
+  width: 100%;
+  border-radius: var(--radius);
+  background: #000;
+  max-height: 500px;
+}
+
+/* Decryption prompt */
+.decrypt-prompt {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.decrypt-prompt p {
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.decrypt-prompt .decrypt-input-row {
+  display: flex;
+  gap: 10px;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.decrypt-prompt input[type="password"] {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.decrypt-prompt input[type="password"]:focus { border-color: var(--blue); }
+
+.decrypt-status {
+  margin-top: 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.decrypt-status.error { color: var(--red); }
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+/* ================================================================
+   TOAST NOTIFICATIONS
+   ================================================================ */
+#toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #fff;
+  min-width: 260px;
+  max-width: 400px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  animation: toast-in 0.3s ease-out;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast.removing { animation: toast-out 0.3s ease-in forwards; }
+
+.toast.success { background: #16a34a; }
+.toast.error { background: #dc2626; }
+.toast.info { background: #2563eb; }
+
+/* ================================================================
+   CONFIRM DIALOG
+   ================================================================ */
+.confirm-dialog {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.confirm-dialog p {
+  color: var(--text-muted);
+  margin-bottom: 20px;
+  font-size: 0.9rem;
+}
+
+.confirm-dialog .confirm-name {
+  color: var(--text-bright);
+  font-weight: 600;
+}
+
+.confirm-dialog .btn-row {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.confirm-dialog .btn-row .btn {
+  min-width: 100px;
+}
+
+/* ================================================================
+   FILE SIZE BADGE
+   ================================================================ */
+.size-badge {
+  display: inline-block;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ================================================================
+   RESPONSIVE
+   ================================================================ */
+@media (max-width: 768px) {
+  .dashboard-wrap { padding: 16px; }
+
+  .header { flex-direction: column; align-items: flex-start; }
+  .header h1 { font-size: 1.15rem; }
+  .header-right { font-size: 0.75rem; }
+
+  .summary-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .summary-card { padding: 14px 16px; }
+  .summary-card .value { font-size: 1.6rem; }
+
+  .search-box input {
+    width: 180px;
+  }
+
+  .search-box input:focus {
+    width: 220px;
+  }
+
+  .section-header { flex-direction: column; align-items: flex-start; }
+
+  .modal { max-width: calc(100vw - 32px); }
+}
+
+@media (max-width: 480px) {
+  .summary-row { grid-template-columns: 1fr 1fr; }
+  .summary-card .value { font-size: 1.4rem; }
+  .search-box input { width: 100%; }
+  .search-box input:focus { width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     LOGIN SCREEN
+     ============================================================ -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>Screen Recording</h1>
+    <p class="subtitle">Control Panel</p>
+    <p class="login-error" id="login-error">Incorrect password</p>
+    <form id="login-form">
+      <input type="password" id="login-password" placeholder="Enter dashboard password" autofocus autocomplete="current-password">
+      <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============================================================
+     DASHBOARD SCREEN
+     ============================================================ -->
+<div id="dashboard-screen">
+  <div class="dashboard-wrap">
+    <!-- Header -->
+    <div class="header">
+      <h1>Screen Recording Control Panel</h1>
+      <div class="header-right">
+        <span class="refresh-indicator"><span class="dot"></span> Auto-refresh 30s</span>
+        <span class="sep">|</span>
+        <span id="last-updated">Loading...</span>
+        <span class="sep">|</span>
+        <a id="refresh-now-btn">Refresh Now</a>
+        <span class="sep">|</span>
+        <a id="sign-out-btn">Sign Out</a>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-row" id="summary-row">
+      <div class="summary-card">
+        <div class="label">Total Machines</div>
+        <div class="value" id="stat-total" style="color: var(--text-bright);">--</div>
+      </div>
+      <div class="summary-card">
+        <div class="label">Active / Recording</div>
+        <div class="value" id="stat-active" style="color: var(--green);">--</div>
+      </div>
+      <div class="summary-card">
+        <div class="label">Offline / Stopped</div>
+        <div class="value" id="stat-offline" style="color: var(--red);">--</div>
+      </div>
+      <div class="summary-card">
+        <div class="label">Total Recordings</div>
+        <div class="value" id="stat-recordings" style="color: var(--blue);">--</div>
+      </div>
+    </div>
+
+    <!-- Machines Section -->
+    <div class="section-header">
+      <h2>Machines <span class="count-badge" id="machines-count">0</span></h2>
+    </div>
+    <div class="table-wrap" id="machines-table-wrap">
+      <div id="machines-loading" style="padding: 20px;">
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+      </div>
+      <table id="machines-table" style="display: none;">
+        <thead>
+          <tr>
+            <th style="width: 130px;">Status</th>
+            <th>Employee</th>
+            <th>Computer</th>
+            <th>Client</th>
+            <th>Last Seen</th>
+            <th style="width: 90px;">Segments</th>
+            <th style="width: 90px;">Uptime</th>
+            <th style="width: 100px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="machines-tbody"></tbody>
+      </table>
+      <div id="machines-empty" class="empty-state" style="display: none;">
+        <div class="empty-icon">&#x1F4BB;</div>
+        <h3>No machines found</h3>
+        <p>Make sure the "machines" tab exists in your Google Sheet and recorders are sending heartbeats.</p>
+      </div>
+      <div id="machines-error" class="error-state" style="display: none;">
+        <h3>Failed to load machines</h3>
+        <p>Check that the Sheet ID is correct and the sheet is published to the web.</p>
+      </div>
+    </div>
+
+    <!-- Recordings Section -->
+    <div class="section-header">
+      <h2>Recordings <span class="count-badge" id="recordings-count">0</span></h2>
+      <div class="search-box">
+        <span class="search-icon">&#x1F50D;</span>
+        <input type="text" id="recordings-search" placeholder="Search recordings...">
+      </div>
+    </div>
+    <div class="table-wrap" id="recordings-table-wrap">
+      <div id="recordings-loading" style="padding: 20px;">
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+      </div>
+      <table id="recordings-table" style="display: none;">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Employee</th>
+            <th>Computer</th>
+            <th>Filename</th>
+            <th style="width: 80px;">Size</th>
+            <th style="width: 160px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="recordings-tbody"></tbody>
+      </table>
+      <div id="recordings-empty" class="empty-state" style="display: none;">
+        <div class="empty-icon">&#x1F4F9;</div>
+        <h3>No recordings found</h3>
+        <p>Recordings will appear here once machines start uploading segments.</p>
+      </div>
+      <div id="recordings-error" class="error-state" style="display: none;">
+        <h3>Failed to load recordings</h3>
+        <p>Check that the Sheet ID is correct and the "recordings" tab exists.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     VIDEO PLAYER MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="video-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="video-modal-title">Video Player</h3>
+      <button class="modal-close" id="video-modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="video-modal-body">
+      <!-- Populated dynamically -->
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     CONFIRM MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal" style="max-width: 420px;">
+    <div class="modal-header">
+      <h3>Confirm Restart</h3>
+      <button class="modal-close" id="confirm-modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-dialog">
+        <p>Are you sure you want to restart<br><span class="confirm-name" id="confirm-machine-name"></span>?</p>
+        <div class="btn-row">
+          <button class="btn btn-outline btn-sm" id="confirm-cancel-btn">Cancel</button>
+          <button class="btn btn-danger-outline btn-sm" id="confirm-ok-btn">Restart</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
+<script>
+// ===== CONFIGURATION =====
+const SHEET_ID = 'YOUR_SHEET_ID_HERE';
+const APPS_SCRIPT_URL = 'YOUR_APPS_SCRIPT_URL_HERE';
+const DASHBOARD_PASSWORD = 'bam2024';
+const MACHINES_TAB = 'machines';
+const RECORDINGS_TAB = 'recordings';
+const REFRESH_INTERVAL_MS = 30000;
+const MAX_RECORDINGS_SHOWN = 50;
+// ===========================
+
+// ===== STATE =====
+let allMachines = [];
+let allRecordings = [];
+let refreshTimer = null;
+
+// ===== UTILITIES =====
+
+/**
+ * Fetch and parse Google Sheets gviz JSON endpoint.
+ * The response is wrapped in: google.visualization.Query.setResponse({...})
+ * We strip that wrapper and parse the inner JSON.
+ */
+async function fetchSheetData(tabName) {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(tabName)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+
+  let text = await resp.text();
+
+  // Strip the JSONP wrapper: google.visualization.Query.setResponse({...})
+  // Find the first '(' and last ')' to extract the JSON object
+  const startIdx = text.indexOf('(');
+  const endIdx = text.lastIndexOf(')');
+  if (startIdx === -1 || endIdx === -1) {
+    throw new Error('Unexpected response format from Google Sheets');
+  }
+  text = text.substring(startIdx + 1, endIdx);
+
+  const data = JSON.parse(text);
+
+  if (data.status === 'error') {
+    throw new Error(data.errors?.[0]?.message || 'Google Sheets query error');
+  }
+
+  // Convert gviz table format to array of objects
+  const cols = data.table.cols.map(c => c.label || c.id);
+  const rows = (data.table.rows || []).map(row => {
+    const obj = {};
+    row.c.forEach((cell, i) => {
+      if (i < cols.length) {
+        // Handle date/datetime values
+        if (cell && cell.v !== null && cell.v !== undefined) {
+          // gviz returns dates as "Date(year,month,day,...)" strings
+          if (typeof cell.v === 'string' && cell.v.startsWith('Date(')) {
+            const parts = cell.v.replace('Date(', '').replace(')', '').split(',').map(Number);
+            // Month is 0-indexed in gviz
+            obj[cols[i]] = new Date(parts[0], parts[1], parts[2], parts[3] || 0, parts[4] || 0, parts[5] || 0);
+          } else {
+            obj[cols[i]] = cell.f || cell.v;  // Use formatted value if available, else raw
+          }
+        } else {
+          obj[cols[i]] = null;
+        }
+      }
+    });
+    return obj;
+  });
+
+  return { cols, rows };
+}
+
+/**
+ * Calculate minutes since a given timestamp string.
+ */
+function minutesSince(timestamp) {
+  if (!timestamp) return Infinity;
+  try {
+    let d;
+    if (timestamp instanceof Date) {
+      d = timestamp;
+    } else {
+      d = new Date(timestamp);
+    }
+    if (isNaN(d.getTime())) return Infinity;
+    return (Date.now() - d.getTime()) / 60000;
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * Format "minutes ago" as human-readable string.
+ */
+function formatLastSeen(minutes) {
+  if (minutes === Infinity || minutes === null || isNaN(minutes)) return 'unknown';
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${Math.round(minutes)}m ago`;
+  if (minutes < 1440) return `${(minutes / 60).toFixed(1)}h ago`;
+  return `${(minutes / 1440).toFixed(1)}d ago`;
+}
+
+/**
+ * Get status color class based on heartbeat age.
+ */
+function getStatusClass(minutes, statusField) {
+  if (statusField === 'stopped' || statusField === 'error') return 'red';
+  if (minutes <= 10) return 'green';
+  if (minutes <= 30) return 'yellow';
+  return 'red';
+}
+
+/**
+ * Get status label based on class.
+ */
+function getStatusLabel(statusClass, statusField) {
+  if (statusField === 'stopped') return 'stopped';
+  if (statusField === 'error') return 'error';
+  if (statusClass === 'green') return 'recording';
+  if (statusClass === 'yellow') return 'stale';
+  return 'offline';
+}
+
+/**
+ * Format file size.
+ */
+function formatSize(bytes) {
+  if (!bytes || isNaN(bytes)) return '--';
+  const num = Number(bytes);
+  if (num < 1024) return num + ' B';
+  if (num < 1048576) return (num / 1024).toFixed(1) + ' KB';
+  if (num < 1073741824) return (num / 1048576).toFixed(1) + ' MB';
+  return (num / 1073741824).toFixed(2) + ' GB';
+}
+
+/**
+ * Format a date for display.
+ */
+function formatDate(d) {
+  if (!d) return '--';
+  try {
+    let date;
+    if (d instanceof Date) {
+      date = d;
+    } else {
+      date = new Date(d);
+    }
+    if (isNaN(date.getTime())) return String(d);
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch {
+    return String(d);
+  }
+}
+
+/**
+ * Escape HTML entities.
+ */
+function esc(str) {
+  if (str === null || str === undefined) return '';
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+/**
+ * Show a toast notification.
+ */
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+
+  const icon = type === 'success' ? '\u2713' : type === 'error' ? '\u2717' : '\u2139';
+  toast.innerHTML = `<span>${icon}</span><span>${esc(message)}</span>`;
+
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('removing');
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+// ===== AUTH =====
+
+function isAuthenticated() {
+  return localStorage.getItem('dashboard_auth') === DASHBOARD_PASSWORD;
+}
+
+function showLogin() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('dashboard-screen').style.display = 'none';
+  stopAutoRefresh();
+}
+
+function showDashboard() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('dashboard-screen').style.display = 'block';
+  loadAllData();
+  startAutoRefresh();
+}
+
+function handleLogin(e) {
+  e.preventDefault();
+  const pw = document.getElementById('login-password').value;
+  if (pw === DASHBOARD_PASSWORD) {
+    localStorage.setItem('dashboard_auth', pw);
+    document.getElementById('login-error').style.display = 'none';
+    document.getElementById('login-password').value = '';
+    showDashboard();
+  } else {
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+function handleSignOut() {
+  localStorage.removeItem('dashboard_auth');
+  sessionStorage.removeItem('encryption_key');
+  showLogin();
+}
+
+// ===== DATA LOADING =====
+
+async function loadMachines() {
+  const loadingEl = document.getElementById('machines-loading');
+  const tableEl = document.getElementById('machines-table');
+  const emptyEl = document.getElementById('machines-empty');
+  const errorEl = document.getElementById('machines-error');
+
+  loadingEl.style.display = 'block';
+  tableEl.style.display = 'none';
+  emptyEl.style.display = 'none';
+  errorEl.style.display = 'none';
+
+  try {
+    const { rows } = await fetchSheetData(MACHINES_TAB);
+    allMachines = rows;
+    renderMachines(rows);
+    loadingEl.style.display = 'none';
+
+    if (rows.length === 0) {
+      emptyEl.style.display = 'block';
+    } else {
+      tableEl.style.display = 'table';
+    }
+  } catch (err) {
+    console.error('Failed to load machines:', err);
+    loadingEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.querySelector('p').textContent = err.message;
+  }
+}
+
+async function loadRecordings() {
+  const loadingEl = document.getElementById('recordings-loading');
+  const tableEl = document.getElementById('recordings-table');
+  const emptyEl = document.getElementById('recordings-empty');
+  const errorEl = document.getElementById('recordings-error');
+
+  loadingEl.style.display = 'block';
+  tableEl.style.display = 'none';
+  emptyEl.style.display = 'none';
+  errorEl.style.display = 'none';
+
+  try {
+    const { rows } = await fetchSheetData(RECORDINGS_TAB);
+    allRecordings = rows;
+    renderRecordings(rows);
+    loadingEl.style.display = 'none';
+
+    if (rows.length === 0) {
+      emptyEl.style.display = 'block';
+    } else {
+      tableEl.style.display = 'table';
+    }
+  } catch (err) {
+    console.error('Failed to load recordings:', err);
+    loadingEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.querySelector('p').textContent = err.message;
+  }
+}
+
+async function loadAllData() {
+  await Promise.allSettled([loadMachines(), loadRecordings()]);
+  document.getElementById('last-updated').textContent =
+    'Updated: ' + new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// ===== RENDERING =====
+
+function renderMachines(machines) {
+  // Determine status for each machine
+  const processed = machines.map(m => {
+    // Try common column names (flexible matching)
+    const heartbeat = m['last_heartbeat'] || m['Last Heartbeat'] || m['heartbeat'] || m['last_seen'] || m['Last Seen'] || null;
+    const status = m['status'] || m['Status'] || '';
+    const employee = m['employee_name'] || m['Employee'] || m['employee'] || m['Employee Name'] || '';
+    const computer = m['computer_name'] || m['Computer'] || m['computer'] || m['Computer Name'] || '';
+    const client = m['client_name'] || m['Client'] || m['client'] || m['Client Name'] || '';
+    const segments = m['segments_uploaded'] || m['Segments'] || m['segments'] || m['Segments Uploaded'] || 0;
+    const uptime = m['uptime_hours'] || m['Uptime'] || m['uptime'] || m['Uptime Hours'] || 0;
+
+    const minsAgo = minutesSince(heartbeat);
+    const statusClass = getStatusClass(minsAgo, status.toLowerCase());
+    const statusLabel = getStatusLabel(statusClass, status.toLowerCase());
+
+    return {
+      ...m,
+      _employee: employee,
+      _computer: computer,
+      _client: client,
+      _segments: segments,
+      _uptime: uptime,
+      _minsAgo: minsAgo,
+      _statusClass: statusClass,
+      _statusLabel: statusLabel,
+      _heartbeat: heartbeat
+    };
+  });
+
+  // Sort: active (green) first, then yellow, then red; within same status, alphabetical by employee
+  const classOrder = { green: 0, yellow: 1, red: 2 };
+  processed.sort((a, b) => {
+    const ao = classOrder[a._statusClass] ?? 3;
+    const bo = classOrder[b._statusClass] ?? 3;
+    if (ao !== bo) return ao - bo;
+    return String(a._employee).localeCompare(String(b._employee));
+  });
+
+  // Update summary
+  const totalMachines = processed.length;
+  const active = processed.filter(m => m._statusClass === 'green').length;
+  const offline = processed.filter(m => m._statusClass !== 'green').length;
+  const totalSegments = processed.reduce((sum, m) => sum + (Number(m._segments) || 0), 0);
+
+  document.getElementById('stat-total').textContent = totalMachines;
+  document.getElementById('stat-active').textContent = active;
+  document.getElementById('stat-offline').textContent = offline;
+  document.getElementById('machines-count').textContent = totalMachines;
+
+  // Render table
+  const tbody = document.getElementById('machines-tbody');
+  tbody.innerHTML = processed.map(m => `
+    <tr>
+      <td>
+        <div class="status-cell">
+          <span class="status-dot ${m._statusClass}"></span>
+          <span class="status-label ${m._statusClass}">${esc(m._statusLabel)}</span>
+        </div>
+      </td>
+      <td>${esc(m._employee)}</td>
+      <td class="mono">${esc(m._computer)}</td>
+      <td>${esc(m._client)}</td>
+      <td>${esc(formatLastSeen(m._minsAgo))}</td>
+      <td class="mono">${esc(m._segments)}</td>
+      <td class="mono">${m._uptime ? esc(m._uptime) + 'h' : '--'}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn btn-danger-outline btn-sm" onclick="confirmRestart('${esc(m._computer)}', '${esc(m._employee)}')">Restart</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function renderRecordings(recordings, filter = '') {
+  // Sort newest first by time column
+  const sorted = [...recordings].sort((a, b) => {
+    const ta = a['timestamp'] || a['Time'] || a['time'] || a['Timestamp'] || a['created'] || '';
+    const tb = b['timestamp'] || b['Time'] || b['time'] || b['Timestamp'] || b['created'] || '';
+    const da = new Date(ta);
+    const db = new Date(tb);
+    if (isNaN(da.getTime()) && isNaN(db.getTime())) return 0;
+    if (isNaN(da.getTime())) return 1;
+    if (isNaN(db.getTime())) return -1;
+    return db - da;
+  });
+
+  // Apply filter
+  const filterLower = filter.toLowerCase();
+  const filtered = filter
+    ? sorted.filter(r => {
+        const searchable = Object.values(r).map(v => String(v || '')).join(' ').toLowerCase();
+        return searchable.includes(filterLower);
+      })
+    : sorted;
+
+  // Limit to max shown
+  const limited = filtered.slice(0, MAX_RECORDINGS_SHOWN);
+
+  // Update count
+  document.getElementById('recordings-count').textContent = filtered.length;
+  document.getElementById('stat-recordings').textContent = recordings.length;
+
+  // Render
+  const tbody = document.getElementById('recordings-tbody');
+
+  if (limited.length === 0) {
+    tbody.innerHTML = '';
+    if (filter && recordings.length > 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-dim);">No recordings match "${esc(filter)}"</td></tr>`;
+    }
+    return;
+  }
+
+  tbody.innerHTML = limited.map(r => {
+    const time = r['timestamp'] || r['Time'] || r['time'] || r['Timestamp'] || r['created'] || '';
+    const employee = r['employee_name'] || r['Employee'] || r['employee'] || r['Employee Name'] || '';
+    const computer = r['computer_name'] || r['Computer'] || r['computer'] || r['Computer Name'] || '';
+    const filename = r['filename'] || r['Filename'] || r['file_name'] || r['File Name'] || r['name'] || '';
+    const size = r['size'] || r['Size'] || r['file_size'] || r['File Size'] || '';
+    const driveId = r['drive_id'] || r['Drive ID'] || r['file_id'] || r['File ID'] || r['drive_file_id'] || '';
+    const driveLink = r['drive_link'] || r['Drive Link'] || r['link'] || r['Link'] || r['url'] || r['URL'] || '';
+
+    const isEncrypted = String(filename).endsWith('.enc');
+    const viewUrl = driveLink || (driveId ? `https://drive.google.com/file/d/${driveId}/view` : '');
+
+    return `
+      <tr>
+        <td>${esc(formatDate(time))}</td>
+        <td>${esc(employee)}</td>
+        <td class="mono">${esc(computer)}</td>
+        <td class="mono" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(filename)}">${esc(filename)}</td>
+        <td><span class="size-badge">${esc(formatSize(size))}</span></td>
+        <td>
+          <div class="actions-cell">
+            ${viewUrl ? `<a class="btn btn-outline btn-sm" href="${esc(viewUrl)}" target="_blank" rel="noopener">Drive</a>` : ''}
+            ${driveId ? `<button class="btn btn-outline btn-sm" onclick="openVideoPlayer('${esc(driveId)}', '${esc(filename)}', ${isEncrypted})">Play</button>` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ===== RECORDINGS SEARCH =====
+
+let searchDebounce = null;
+function handleRecordingsSearch(e) {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    const val = e.target.value.trim();
+    renderRecordings(allRecordings, val);
+  }, 250);
+}
+
+// ===== RESTART FUNCTIONALITY =====
+
+let pendingRestartComputer = '';
+
+function confirmRestart(computer, employee) {
+  pendingRestartComputer = computer;
+  document.getElementById('confirm-machine-name').textContent = `${employee} (${computer})`;
+  document.getElementById('confirm-modal').classList.add('active');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').classList.remove('active');
+  pendingRestartComputer = '';
+}
+
+async function executeRestart() {
+  const computer = pendingRestartComputer;
+  closeConfirmModal();
+
+  if (!computer) return;
+
+  try {
+    showToast(`Sending restart command to ${computer}...`, 'info');
+
+    const resp = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'restart',
+        computer_name: computer
+      }),
+      mode: 'no-cors' // Apps Script may not set CORS headers
+    });
+
+    // With no-cors mode, we won't get a readable response, but the request goes through
+    showToast(`Restart command sent to ${computer}`, 'success');
+  } catch (err) {
+    console.error('Restart failed:', err);
+    showToast(`Failed to restart ${computer}: ${err.message}`, 'error');
+  }
+}
+
+// ===== VIDEO PLAYER =====
+
+function openVideoPlayer(driveId, filename, isEncrypted) {
+  document.getElementById('video-modal-title').textContent = filename;
+  const body = document.getElementById('video-modal-body');
+
+  if (isEncrypted) {
+    // Show decryption prompt
+    const savedKey = sessionStorage.getItem('encryption_key');
+    body.innerHTML = `
+      <div class="decrypt-prompt">
+        <p>This file is encrypted (.enc). Enter the decryption key to play it.</p>
+        <div class="decrypt-input-row">
+          <input type="password" id="decrypt-key-input" placeholder="Encryption key (hex or base64)" value="${savedKey ? esc(savedKey) : ''}">
+          <button class="btn btn-primary btn-sm" id="decrypt-go-btn">Decrypt &amp; Play</button>
+        </div>
+        <div class="decrypt-status" id="decrypt-status"></div>
+      </div>
+    `;
+
+    document.getElementById('decrypt-go-btn').addEventListener('click', () => {
+      const key = document.getElementById('decrypt-key-input').value.trim();
+      if (!key) {
+        document.getElementById('decrypt-status').textContent = 'Please enter a decryption key.';
+        document.getElementById('decrypt-status').className = 'decrypt-status error';
+        return;
+      }
+      sessionStorage.setItem('encryption_key', key);
+      decryptAndPlay(driveId, filename, key);
+    });
+
+    // Auto-decrypt if key already saved
+    if (savedKey) {
+      // Give the UI a moment to render
+      setTimeout(() => decryptAndPlay(driveId, filename, savedKey), 100);
+    }
+  } else {
+    // Plain MP4 - embed with Google Drive preview
+    body.innerHTML = `
+      <video controls autoplay style="width:100%;">
+        <source src="https://drive.google.com/uc?export=download&id=${esc(driveId)}" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+      <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim);">
+        If playback does not start,
+        <a href="https://drive.google.com/file/d/${esc(driveId)}/preview" target="_blank" rel="noopener" style="color:var(--blue);">open in Google Drive</a>.
+      </p>
+    `;
+  }
+
+  document.getElementById('video-modal').classList.add('active');
+}
+
+async function decryptAndPlay(driveId, filename, keyStr) {
+  const statusEl = document.getElementById('decrypt-status');
+  if (!statusEl) return;
+
+  statusEl.className = 'decrypt-status';
+  statusEl.innerHTML = '<span class="spinner"></span> Downloading encrypted file...';
+
+  try {
+    // Download the file from Google Drive
+    const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
+    const resp = await fetch(downloadUrl);
+    if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
+
+    statusEl.innerHTML = '<span class="spinner"></span> Decrypting...';
+
+    const encryptedData = await resp.arrayBuffer();
+
+    // Parse the key (support hex and base64)
+    let keyBytes;
+    if (/^[0-9a-fA-F]+$/.test(keyStr)) {
+      // Hex
+      keyBytes = new Uint8Array(keyStr.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    } else {
+      // Try base64
+      try {
+        const raw = atob(keyStr);
+        keyBytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) keyBytes[i] = raw.charCodeAt(i);
+      } catch {
+        throw new Error('Invalid key format. Use hex or base64.');
+      }
+    }
+
+    // Import the key for AES-GCM
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyBytes,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+
+    // The encrypted file format: first 12 bytes are the IV (nonce), rest is ciphertext+tag
+    const encArray = new Uint8Array(encryptedData);
+    const iv = encArray.slice(0, 12);
+    const ciphertext = encArray.slice(12);
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv },
+      cryptoKey,
+      ciphertext
+    );
+
+    // Create a blob URL and play
+    const blob = new Blob([decrypted], { type: 'video/mp4' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const body = document.getElementById('video-modal-body');
+    body.innerHTML = `
+      <video controls autoplay style="width:100%;">
+        <source src="${blobUrl}" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+    `;
+
+    // Clean up blob URL when modal closes
+    body.dataset.blobUrl = blobUrl;
+
+  } catch (err) {
+    console.error('Decryption error:', err);
+    statusEl.className = 'decrypt-status error';
+    statusEl.textContent = `Decryption failed: ${err.message}`;
+  }
+}
+
+function closeVideoModal() {
+  const modal = document.getElementById('video-modal');
+  const body = document.getElementById('video-modal-body');
+
+  // Revoke any blob URLs
+  if (body.dataset.blobUrl) {
+    URL.revokeObjectURL(body.dataset.blobUrl);
+    delete body.dataset.blobUrl;
+  }
+
+  // Stop any playing video
+  const video = body.querySelector('video');
+  if (video) {
+    video.pause();
+    video.src = '';
+  }
+
+  body.innerHTML = '';
+  modal.classList.remove('active');
+}
+
+// ===== AUTO-REFRESH =====
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  refreshTimer = setInterval(() => {
+    if (isAuthenticated()) loadAllData();
+  }, REFRESH_INTERVAL_MS);
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+// ===== EVENT LISTENERS =====
+
+document.addEventListener('DOMContentLoaded', () => {
+  // Login form
+  document.getElementById('login-form').addEventListener('submit', handleLogin);
+
+  // Sign out
+  document.getElementById('sign-out-btn').addEventListener('click', handleSignOut);
+
+  // Refresh now
+  document.getElementById('refresh-now-btn').addEventListener('click', () => {
+    if (isAuthenticated()) loadAllData();
+  });
+
+  // Recordings search
+  document.getElementById('recordings-search').addEventListener('input', handleRecordingsSearch);
+
+  // Video modal close
+  document.getElementById('video-modal-close').addEventListener('click', closeVideoModal);
+  document.getElementById('video-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeVideoModal();
+  });
+
+  // Confirm modal
+  document.getElementById('confirm-modal-close').addEventListener('click', closeConfirmModal);
+  document.getElementById('confirm-cancel-btn').addEventListener('click', closeConfirmModal);
+  document.getElementById('confirm-ok-btn').addEventListener('click', executeRestart);
+  document.getElementById('confirm-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeConfirmModal();
+  });
+
+  // Keyboard: Escape to close modals
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeVideoModal();
+      closeConfirmModal();
+    }
+  });
+
+  // Check auth state
+  if (isAuthenticated()) {
+    showDashboard();
+  } else {
+    showLogin();
+  }
+});
+</script>
+</body>
+</html>

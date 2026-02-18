@@ -64,6 +64,16 @@ class HeartbeatSender:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+    @property
+    def segments_uploaded(self) -> int:
+        return self._segments_uploaded
+
+    @property
+    def uptime_hours(self) -> float:
+        started = datetime.fromisoformat(self._started_at)
+        delta = datetime.now(timezone.utc) - started
+        return delta.total_seconds() / 3600
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
