@@ -84,6 +84,12 @@ detect_os() {
 PYTHON3_BIN=""
 
 find_real_python3() {
+    # Check our own bundled Python first
+    if [ -x "$INSTALL_DIR/python/bin/python3" ]; then
+        PYTHON3_BIN="$INSTALL_DIR/python/bin/python3"
+        return 0
+    fi
+
     # Check common locations for a REAL python3 binary.
     # IMPORTANT: Do NOT use /usr/bin/python3 on macOS — it is an Xcode CLT
     # shim that pops up a "Install Developer Tools" dialog on fresh machines.
@@ -101,7 +107,7 @@ find_real_python3() {
         return 0
     fi
 
-    # Only use /usr/bin/python3 if Xcode CLT is actually installed (shim is safe then)
+    # Only use /usr/bin/python3 if Xcode CLT is actually installed
     if xcode-select -p >/dev/null 2>&1 && [ -x /usr/bin/python3 ]; then
         PYTHON3_BIN="/usr/bin/python3"
         return 0
@@ -111,9 +117,38 @@ find_real_python3() {
 }
 
 install_python() {
-    info "Python not found — downloading from python.org..."
-
     PYTHON_VERSION="3.11.9"
+    BUILD_DATE="20240726"
+
+    # Detect CPU architecture (standalone builds use aarch64, not arm64)
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        arm64) ARCH="aarch64" ;;
+    esac
+
+    # Try standalone Python first (no sudo required)
+    info "Python not found — downloading standalone Python ${PYTHON_VERSION}..."
+    PYTHON_URL="https://github.com/indygreg/python-build-standalone/releases/download/${BUILD_DATE}/cpython-${PYTHON_VERSION}+${BUILD_DATE}-${ARCH}-apple-darwin-install_only.tar.gz"
+    PYTHON_TGZ="/tmp/python-standalone-$$.tar.gz"
+
+    curl -sL "$PYTHON_URL" -o "$PYTHON_TGZ"
+
+    if [ -s "$PYTHON_TGZ" ]; then
+        mkdir -p "$INSTALL_DIR"
+        rm -rf "$INSTALL_DIR/python"
+        tar -xzf "$PYTHON_TGZ" -C "$INSTALL_DIR" 2>/dev/null
+        rm -f "$PYTHON_TGZ"
+
+        if [ -x "$INSTALL_DIR/python/bin/python3" ]; then
+            PYTHON3_BIN="$INSTALL_DIR/python/bin/python3"
+            ok "Python ${PYTHON_VERSION} installed ($PYTHON3_BIN)"
+            return 0
+        fi
+    fi
+    rm -f "$PYTHON_TGZ"
+
+    # Fallback: python.org .pkg installer (requires password)
+    info "Standalone download failed — trying python.org installer..."
     PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
     PYTHON_PKG="/tmp/python-${PYTHON_VERSION}.pkg"
 
@@ -121,7 +156,7 @@ install_python() {
 
     if [ ! -s "$PYTHON_PKG" ]; then
         rm -f "$PYTHON_PKG"
-        fail "Failed to download Python installer from python.org"
+        fail "Failed to download Python installer"
     fi
 
     info "Installing Python ${PYTHON_VERSION} (you may be prompted for your password)..."
@@ -133,14 +168,10 @@ install_python() {
         fail "Python installation failed. Please install manually from https://python.org"
     fi
 
-    # Install SSL certificates (needed for HTTPS with python.org builds)
-    /Library/Frameworks/Python.framework/Versions/*/bin/python3 -m pip install --upgrade certifi >/dev/null 2>&1 || true
-
-    # Refresh: python.org .pkg creates /usr/local/bin/python3
     if find_real_python3; then
         ok "Python ${PYTHON_VERSION} installed ($PYTHON3_BIN)"
     else
-        fail "Python was installed but could not be found. Try reopening Terminal."
+        fail "Python was installed but could not be found."
     fi
 }
 
@@ -164,15 +195,24 @@ check_python() {
 }
 
 check_ffmpeg() {
+    # Check system PATH first
     if command -v ffmpeg &>/dev/null; then
         ok "FFmpeg found"
         return 0
     fi
 
+    # Check our local install dir
+    if [ -x "$INSTALL_DIR/bin/ffmpeg" ]; then
+        export PATH="$INSTALL_DIR/bin:$PATH"
+        ok "FFmpeg found ($INSTALL_DIR/bin/ffmpeg)"
+        return 0
+    fi
+
     info "FFmpeg not found, installing..."
+    mkdir -p "$INSTALL_DIR/bin"
 
     if [ "$OS" = "macos" ]; then
-        # Try Homebrew if it's already installed (don't install Homebrew just for FFmpeg)
+        # Try Homebrew if it's already installed (don't install Homebrew just for this)
         if command -v brew &>/dev/null; then
             brew install ffmpeg --quiet 2>/dev/null
             if command -v ffmpeg &>/dev/null; then
@@ -181,7 +221,7 @@ check_ffmpeg() {
             fi
         fi
 
-        # Download a static FFmpeg binary (no Xcode CLT required)
+        # Download static FFmpeg binary into install dir (no sudo, no Xcode CLT)
         info "Downloading static FFmpeg binary..."
         FFMPEG_ZIP="/tmp/ffmpeg_static_$$.zip"
         curl -sL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o "$FFMPEG_ZIP"
@@ -190,33 +230,19 @@ check_ffmpeg() {
             FFMPEG_TMPDIR=$(mktemp -d /tmp/ffmpeg_extract_XXXXXX)
             unzip -qo "$FFMPEG_ZIP" -d "$FFMPEG_TMPDIR" 2>/dev/null
             if [ -f "$FFMPEG_TMPDIR/ffmpeg" ]; then
-                sudo mkdir -p /usr/local/bin
-                sudo mv "$FFMPEG_TMPDIR/ffmpeg" /usr/local/bin/ffmpeg
-                sudo chmod 755 /usr/local/bin/ffmpeg
-                sudo xattr -rd com.apple.quarantine /usr/local/bin/ffmpeg 2>/dev/null || true
+                mv "$FFMPEG_TMPDIR/ffmpeg" "$INSTALL_DIR/bin/ffmpeg"
+                chmod 755 "$INSTALL_DIR/bin/ffmpeg"
+                xattr -rd com.apple.quarantine "$INSTALL_DIR/bin/ffmpeg" 2>/dev/null || true
+                export PATH="$INSTALL_DIR/bin:$PATH"
                 rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
                 if command -v ffmpeg &>/dev/null; then
-                    ok "FFmpeg installed to /usr/local/bin/ffmpeg"
+                    ok "FFmpeg installed ($INSTALL_DIR/bin/ffmpeg)"
                     return 0
                 fi
             fi
             rm -rf "$FFMPEG_TMPDIR" "$FFMPEG_ZIP"
         fi
         rm -f "$FFMPEG_ZIP"
-
-        # Last resort: install Homebrew + FFmpeg (may trigger Xcode CLT)
-        info "Static download failed — installing via Homebrew..."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-        if [ -f /opt/homebrew/bin/brew ]; then
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-        elif [ -f /usr/local/bin/brew ]; then
-            eval "$(/usr/local/bin/brew shellenv)"
-        fi
-        brew install ffmpeg --quiet 2>/dev/null
-        if command -v ffmpeg &>/dev/null; then
-            ok "FFmpeg installed via Homebrew"
-            return 0
-        fi
     elif [ "$OS" = "linux" ]; then
         if command -v apt-get &>/dev/null; then
             sudo apt-get install -y -qq ffmpeg 2>/dev/null
@@ -421,7 +447,7 @@ ${FIVE_MIN_ARG}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <string>${INSTALL_DIR}/bin:${INSTALL_DIR}/python/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
 </dict>
 </plist>
