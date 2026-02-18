@@ -12,7 +12,7 @@
 #   Or from a private repo (using a GitHub token):
 #     curl -sL -H "Authorization: token YOUR_GITHUB_TOKEN" https://raw.githubusercontent.com/YOUR_USERNAME/screenrecord/main/bootstrap.sh | bash -s -- -5
 #
-set -euo pipefail
+set -u
 
 # === CONFIGURATION ===
 
@@ -351,18 +351,16 @@ check_screen_permission() {
 
     info "Verifying screen recording permission..."
     SCREEN_IDX=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | \
-        awk '/Capture screen/{gsub(/.*\[/,""); gsub(/\].*/,""); print; exit}' || true)
+        awk '/Capture screen/{gsub(/.*\[/,""); gsub(/\].*/,""); print; exit}') || true
     SCREEN_IDX="${SCREEN_IDX:-1}"
 
-    TEST_FILE=$(mktemp /tmp/sr_perm_test_XXXXXX).mp4
-    if ffmpeg -y -f avfoundation -pixel_format uyvy422 -framerate 30 \
+    TEST_FILE="/tmp/sr_perm_test_$$.mp4"
+    rm -f "$TEST_FILE"
+    ffmpeg -y -f avfoundation -pixel_format uyvy422 -framerate 30 \
         -capture_cursor 1 -i "${SCREEN_IDX}:none" \
         -t 1 -vf fps=5 -c:v libx264 -preset ultrafast -crf 28 \
-        -pix_fmt yuv420p "$TEST_FILE" >/dev/null 2>&1; then
-        RESULT=0
-    else
-        RESULT=1
-    fi
+        -pix_fmt yuv420p "$TEST_FILE" >/dev/null 2>&1
+    RESULT=$?
 
     if [ $RESULT -ne 0 ] || [ ! -s "$TEST_FILE" ]; then
         rm -f "$TEST_FILE"
