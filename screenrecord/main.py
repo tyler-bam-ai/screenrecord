@@ -220,19 +220,26 @@ class ScreenRecordService:
         self.stop_event.wait()
 
     def _update_check_loop(self):
-        """Periodically check for remote updates (every hour)."""
+        """Check for updates on startup, then every hour. Auto-restart on update."""
         update_interval = 3600  # 1 hour
+
+        # Check immediately on startup (short delay to let service stabilize)
+        self.stop_event.wait(timeout=30)
+
         while not self.stop_event.is_set():
-            self.stop_event.wait(timeout=update_interval)
             if self.stop_event.is_set():
                 break
             try:
                 if self.update_checker and self.update_checker.check_and_apply():
-                    logger.info("Update applied. Service will restart on next launch.")
+                    logger.info("Update applied. Restarting service...")
                     if self.heartbeat:
-                        self.heartbeat.set_status("updated - restart pending")
+                        self.heartbeat.set_status("updating - restarting")
+                    # Gracefully stop, then restart via exec
+                    self.stop()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
             except Exception:
                 logger.exception("Error during update check")
+            self.stop_event.wait(timeout=update_interval)
 
     def _command_poll_loop(self):
         """Poll Google Sheets for restart commands and update machine status every 30 seconds."""

@@ -1,371 +1,265 @@
-"""Remote update module for the screen recording service.
+"""Auto-update module that pulls latest code from GitHub.
 
-Checks for updates published to a Google Drive ``_update/`` folder and
-applies them safely.  The admin pushes updates using ``push_update.py``;
-each deployed recorder periodically calls ``check_and_apply()`` to pull
-and install new versions.
+On startup and every hour, checks the GitHub repo for new commits on the
+main branch. If a newer commit is found, downloads the repo zip, extracts
+the updated ``screenrecord/`` package and root-level config files, and
+signals for an automatic restart.
 
-Update package layout on Google Drive (inside the shared root folder):
-
-    _update/
-        version.json          - ``{"version": "X.Y.Z", "url": "update_X.Y.Z.tar.gz", "sha256": "..."}``
-        update_X.Y.Z.tar.gz  - tar.gz archive containing the updated ``screenrecord/`` package files
+No manual packaging or uploading required — every ``git push`` to main
+auto-deploys to all running agents.
 
 Safety guarantees:
-    * SHA-256 hash is verified before extraction.
-    * A timestamped backup of the old installation is kept.
+    * A timestamped backup of the current installation is kept before applying.
     * All errors are caught so a failed update never crashes the recorder.
+    * Local data (config.yaml, credentials, keys, recordings, logs) is preserved.
 """
 
-import hashlib
-import io
 import json
 import logging
 import os
 import shutil
-import tarfile
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
-
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+from typing import Any, Dict, Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+# GitHub repository coordinates
+GITHUB_OWNER = "tyler-bam-ai"
+GITHUB_REPO = "screenrecord"
+GITHUB_BRANCH = "main"
 
-# Re-export __version__ from the package for convenience.
-from screenrecord import __version__ as LOCAL_VERSION
+GITHUB_API_URL = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+)
+GITHUB_ZIP_URL = (
+    f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+)
 
-
-def _parse_version(version_str: str) -> Tuple[int, ...]:
-    """Parse a semver-style version string into a comparable tuple.
-
-    Handles versions like ``"0.1.0"``, ``"1.2.3"``, etc.
-
-    Args:
-        version_str: Dot-separated version string.
-
-    Returns:
-        Tuple of integer components, e.g. ``(0, 1, 0)``.
-    """
-    try:
-        return tuple(int(p) for p in version_str.strip().split("."))
-    except (ValueError, AttributeError):
-        return (0, 0, 0)
+# Files/dirs that should NEVER be overwritten by an update
+PRESERVE = frozenset({
+    "config.yaml",
+    "credentials.json",
+    "encryption.key",
+    "recordings",
+    "logs",
+    "audit.log",
+    "consent_records.json",
+    "rag_db",
+    "python",
+    "bin",
+    ".commit_sha",
+})
 
 
 class UpdateChecker:
-    """Checks for and applies remote updates from Google Drive.
+    """Checks for and applies updates from GitHub.
 
     Usage::
 
         updater = UpdateChecker(config)
-        updater.check_and_apply()
+        if updater.check_and_apply():
+            # update was applied — restart the service
+            ...
 
-    The *config* dictionary must contain:
+    The *config* dictionary should contain:
 
-    * ``google_drive.credentials_file`` -- path to the service-account JSON
-    * ``google_drive.root_folder_id``   -- ID of the shared root Drive folder
-    * ``install_dir`` (optional)        -- path to the ``screenrecord/`` package
-      directory on disk; defaults to the directory containing this module.
+    * ``install_dir`` (optional) — path to ``~/.screenrecord``;
+      defaults to the parent of the directory containing this module.
     """
 
-    # Name of the sub-folder that holds update artefacts on Drive.
-    UPDATE_FOLDER_NAME = "_update"
-    VERSION_FILE_NAME = "version.json"
-
     def __init__(self, config: Dict[str, Any]) -> None:
-        drive_cfg = config["google_drive"]
-        credentials_file = drive_cfg["credentials_file"]
-        self.root_folder_id = drive_cfg["root_folder_id"]
+        # The install directory is the parent of the screenrecord/ package.
+        # e.g. if this file is ~/.screenrecord/screenrecord/updater.py,
+        # then install_dir is ~/.screenrecord/
+        default_install = Path(__file__).resolve().parent.parent
+        self.install_dir = Path(config.get("install_dir", default_install))
+        self._sha_file = self.install_dir / ".commit_sha"
+        self._local_sha = self._read_local_sha()
 
-        # Where the screenrecord package is installed on this machine.
-        self.install_dir = Path(
-            config.get("install_dir", Path(__file__).resolve().parent)
+        logger.info(
+            "Updater: initialized (install_dir=%s, local_sha=%s)",
+            self.install_dir,
+            self._local_sha[:8] if self._local_sha else "none",
         )
-
-        logger.info("Updater: authenticating with Google Drive service account.")
-        try:
-            creds = Credentials.from_service_account_file(
-                credentials_file, scopes=SCOPES
-            )
-            self.service = build("drive", "v3", credentials=creds)
-        except Exception:
-            logger.exception("Updater: failed to authenticate with Google Drive.")
-            raise
-
-        # Lazily resolved Drive folder ID for ``_update/``.
-        self._update_folder_id: Optional[str] = None
-
-        # Cached remote version metadata from the last successful check.
-        self._remote_meta: Optional[Dict[str, str]] = None
 
     # ------------------------------------------------------------------
-    # Drive helpers
+    # SHA tracking
     # ------------------------------------------------------------------
 
-    def _resolve_update_folder(self) -> Optional[str]:
-        """Find the ``_update/`` folder under the root Drive folder.
+    def _read_local_sha(self) -> str:
+        """Read the locally stored commit SHA."""
+        try:
+            if self._sha_file.exists():
+                return self._sha_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        return ""
+
+    def _write_local_sha(self, sha: str) -> None:
+        """Persist the current commit SHA to disk."""
+        try:
+            self._sha_file.write_text(sha + "\n", encoding="utf-8")
+            self._local_sha = sha
+        except OSError:
+            logger.warning("Updater: could not write SHA file.")
+
+    # ------------------------------------------------------------------
+    # GitHub helpers
+    # ------------------------------------------------------------------
+
+    def _get_remote_sha(self) -> Optional[str]:
+        """Fetch the latest commit SHA from GitHub API.
 
         Returns:
-            The Drive folder ID, or ``None`` if the folder does not exist.
+            The 40-character commit SHA, or None on failure.
         """
-        if self._update_folder_id is not None:
-            return self._update_folder_id
-
-        query = (
-            f"name='{self.UPDATE_FOLDER_NAME}' "
-            f"and '{self.root_folder_id}' in parents "
-            f"and mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false"
-        )
         try:
-            results = (
-                self.service.files()
-                .list(
-                    q=query, spaces="drive", fields="files(id, name)",
-                    supportsAllDrives=True, includeItemsFromAllDrives=True,
-                )
-                .execute()
-            )
-        except HttpError:
-            logger.exception("Updater: error searching for _update folder.")
-            return None
+            req = Request(GITHUB_API_URL, headers={
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "BAM-AI-ScreenRecorder-Updater",
+            })
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                sha = data.get("sha", "")
+                if sha:
+                    return sha
+        except (URLError, json.JSONDecodeError, KeyError, OSError) as exc:
+            logger.debug("Updater: could not fetch remote SHA: %s", exc)
+        return None
 
-        files = results.get("files", [])
-        if not files:
-            logger.debug("Updater: _update folder not found; no updates available.")
-            return None
-
-        self._update_folder_id = files[0]["id"]
-        logger.debug("Updater: found _update folder (%s).", self._update_folder_id)
-        return self._update_folder_id
-
-    def _find_file_in_folder(
-        self, filename: str, folder_id: str
-    ) -> Optional[str]:
-        """Return the Drive file ID of *filename* inside *folder_id*, or ``None``."""
-        query = (
-            f"name='{filename}' "
-            f"and '{folder_id}' in parents "
-            f"and trashed=false"
-        )
-        try:
-            results = (
-                self.service.files()
-                .list(
-                    q=query, spaces="drive", fields="files(id, name)",
-                    supportsAllDrives=True, includeItemsFromAllDrives=True,
-                )
-                .execute()
-            )
-        except HttpError:
-            logger.exception("Updater: error searching for file '%s'.", filename)
-            return None
-
-        files = results.get("files", [])
-        return files[0]["id"] if files else None
-
-    def _download_file(self, file_id: str) -> bytes:
-        """Download the full contents of a Drive file into memory.
-
-        Args:
-            file_id: Google Drive file ID.
+    def _download_zip(self) -> Optional[bytes]:
+        """Download the repo zip from GitHub.
 
         Returns:
-            Raw bytes of the file.
+            Raw zip bytes, or None on failure.
         """
-        request = self.service.files().get_media(fileId=file_id)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                logger.debug(
-                    "Updater: download progress %.1f%%",
-                    status.progress() * 100,
-                )
-        return buffer.getvalue()
+        try:
+            req = Request(GITHUB_ZIP_URL, headers={
+                "User-Agent": "BAM-AI-ScreenRecorder-Updater",
+            })
+            with urlopen(req, timeout=120) as resp:
+                return resp.read()
+        except (URLError, OSError) as exc:
+            logger.error("Updater: failed to download zip: %s", exc)
+        return None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def check_for_update(self) -> bool:
-        """Check whether a newer version is available on Google Drive.
-
-        Reads ``_update/version.json`` from Drive and compares the remote
-        version string against the locally installed ``__version__``.
+        """Check whether a newer commit exists on GitHub.
 
         Returns:
-            ``True`` if an update is available, ``False`` otherwise.
+            True if an update is available, False otherwise.
         """
-        self._remote_meta = None  # Reset from any prior call.
-
-        folder_id = self._resolve_update_folder()
-        if folder_id is None:
+        remote_sha = self._get_remote_sha()
+        if remote_sha is None:
+            logger.debug("Updater: could not reach GitHub; skipping check.")
             return False
 
-        # Find version.json
-        version_file_id = self._find_file_in_folder(
-            self.VERSION_FILE_NAME, folder_id
-        )
-        if version_file_id is None:
-            logger.debug("Updater: version.json not found in _update folder.")
+        if remote_sha == self._local_sha:
+            logger.info("Updater: already up to date (%s).", remote_sha[:8])
             return False
-
-        # Download and parse version.json
-        try:
-            raw = self._download_file(version_file_id)
-            meta = json.loads(raw)
-        except (json.JSONDecodeError, HttpError):
-            logger.exception("Updater: failed to read version.json.")
-            return False
-
-        remote_version = meta.get("version", "")
-        remote_url = meta.get("url", "")
-        remote_sha = meta.get("sha256", "")
-
-        if not remote_version or not remote_url or not remote_sha:
-            logger.warning(
-                "Updater: version.json is incomplete: %s", meta
-            )
-            return False
-
-        local_tuple = _parse_version(LOCAL_VERSION)
-        remote_tuple = _parse_version(remote_version)
 
         logger.info(
-            "Updater: local version %s, remote version %s.",
-            LOCAL_VERSION,
-            remote_version,
+            "Updater: new commit available (%s -> %s).",
+            self._local_sha[:8] if self._local_sha else "none",
+            remote_sha[:8],
         )
-
-        if remote_tuple > local_tuple:
-            logger.info("Updater: update available (%s -> %s).", LOCAL_VERSION, remote_version)
-            self._remote_meta = meta
-            return True
-
-        logger.info("Updater: already up to date.")
-        return False
+        self._pending_sha = remote_sha
+        return True
 
     def apply_update(self) -> bool:
-        """Download and apply the update that was found by ``check_for_update``.
+        """Download and apply the latest code from GitHub.
 
-        This method:
-        1. Downloads the tar.gz archive from Drive.
-        2. Verifies the SHA-256 hash.
-        3. Creates a timestamped backup of the current installation.
-        4. Extracts the archive into the install directory.
+        1. Downloads the repo zip.
+        2. Creates a timestamped backup of the screenrecord/ package.
+        3. Extracts updated files, preserving local data.
+        4. Saves the new commit SHA.
 
         Returns:
-            ``True`` if the update was applied successfully, ``False`` otherwise.
+            True if the update was applied successfully, False otherwise.
         """
-        if self._remote_meta is None:
+        pending_sha = getattr(self, "_pending_sha", None)
+        if not pending_sha:
             logger.error("Updater: apply_update called without a pending update.")
             return False
 
-        remote_version = self._remote_meta["version"]
-        archive_name = self._remote_meta["url"]
-        expected_sha = self._remote_meta["sha256"]
-
-        folder_id = self._resolve_update_folder()
-        if folder_id is None:
-            logger.error("Updater: _update folder disappeared during apply.")
+        # ----------------------------------------------------------
+        # 1. Download the zip
+        # ----------------------------------------------------------
+        logger.info("Updater: downloading update from GitHub...")
+        zip_bytes = self._download_zip()
+        if zip_bytes is None:
             return False
+        logger.info("Updater: downloaded %.1f MB.", len(zip_bytes) / 1024 / 1024)
 
         # ----------------------------------------------------------
-        # 1. Download the archive
+        # 2. Backup current screenrecord/ package
         # ----------------------------------------------------------
-        archive_file_id = self._find_file_in_folder(archive_name, folder_id)
-        if archive_file_id is None:
-            logger.error(
-                "Updater: archive '%s' not found in _update folder.", archive_name
-            )
-            return False
-
-        logger.info("Updater: downloading update archive '%s'...", archive_name)
-        try:
-            archive_bytes = self._download_file(archive_file_id)
-        except Exception:
-            logger.exception("Updater: failed to download archive '%s'.", archive_name)
-            return False
-
-        # ----------------------------------------------------------
-        # 2. Verify SHA-256
-        # ----------------------------------------------------------
-        actual_sha = hashlib.sha256(archive_bytes).hexdigest()
-        if actual_sha != expected_sha:
-            logger.error(
-                "Updater: SHA-256 mismatch! expected=%s actual=%s. "
-                "Update aborted.",
-                expected_sha,
-                actual_sha,
-            )
-            return False
-        logger.info("Updater: SHA-256 verified successfully.")
-
-        # ----------------------------------------------------------
-        # 3. Create a backup of the current installation
-        # ----------------------------------------------------------
+        pkg_dir = self.install_dir / "screenrecord"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = self.install_dir.parent / f"screenrecord_backup_{timestamp}"
-        try:
-            shutil.copytree(self.install_dir, backup_dir)
-            logger.info("Updater: backed up current installation to %s.", backup_dir)
-        except Exception:
-            logger.exception(
-                "Updater: failed to create backup at %s. Update aborted.",
-                backup_dir,
-            )
-            return False
+        backup_dir = self.install_dir / f"_backup_{timestamp}"
+
+        if pkg_dir.exists():
+            try:
+                shutil.copytree(pkg_dir, backup_dir / "screenrecord")
+                logger.info("Updater: backed up to %s.", backup_dir)
+            except Exception:
+                logger.exception("Updater: failed to create backup. Aborting.")
+                return False
 
         # ----------------------------------------------------------
-        # 4. Extract the archive into the install directory
+        # 3. Extract updated files
         # ----------------------------------------------------------
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
-                archive_file = tmp_path / archive_name
-                archive_file.write_bytes(archive_bytes)
+                zip_file = tmp_path / "repo.zip"
+                zip_file.write_bytes(zip_bytes)
 
-                with tarfile.open(archive_file, "r:gz") as tar:
-                    # Security: check for path traversal attacks.
-                    for member in tar.getmembers():
-                        member_path = os.path.normpath(member.name)
-                        if member_path.startswith("..") or os.path.isabs(member_path):
-                            logger.error(
-                                "Updater: archive contains unsafe path '%s'. "
-                                "Update aborted.",
-                                member.name,
-                            )
-                            # Restore from backup
-                            self._restore_backup(backup_dir)
-                            return False
+                with zipfile.ZipFile(zip_file, "r") as zf:
+                    zf.extractall(tmp_path)
 
-                    tar.extractall(path=tmp_path)
+                # GitHub zips contain a top-level folder like screenrecord-main/
+                extracted_dirs = [
+                    d for d in tmp_path.iterdir()
+                    if d.is_dir() and d.name != "__MACOSX"
+                ]
+                if not extracted_dirs:
+                    logger.error("Updater: zip extraction produced no directories.")
+                    self._restore_backup(backup_dir, pkg_dir)
+                    return False
 
-                # The archive should contain a ``screenrecord/`` directory
-                # (or the files directly). Detect and copy appropriately.
-                extracted_pkg = tmp_path / "screenrecord"
-                if extracted_pkg.is_dir():
-                    source_dir = extracted_pkg
+                repo_root = extracted_dirs[0]
+
+                # Copy the screenrecord/ package (the Python code)
+                new_pkg = repo_root / "screenrecord"
+                if new_pkg.is_dir():
+                    if pkg_dir.exists():
+                        shutil.rmtree(pkg_dir)
+                    shutil.copytree(new_pkg, pkg_dir)
+                    logger.info("Updater: replaced screenrecord/ package.")
                 else:
-                    # Files were extracted flat into tmp_path; use tmp_path
-                    # but skip the archive file itself.
-                    source_dir = tmp_path
+                    logger.error("Updater: no screenrecord/ dir found in zip.")
+                    self._restore_backup(backup_dir, pkg_dir)
+                    return False
 
-                # Overwrite existing files in install_dir with updated ones.
-                for item in source_dir.iterdir():
-                    if item.name == archive_name:
-                        # Skip the archive itself if extracted flat.
+                # Copy root-level files that aren't in the PRESERVE list
+                # (e.g. requirements.txt, requirements-core.txt, etc.)
+                for item in repo_root.iterdir():
+                    if item.name in PRESERVE:
                         continue
+                    if item.name == "screenrecord":
+                        continue  # already handled above
+                    if item.name.startswith("."):
+                        continue  # skip .git, .gitignore, etc.
                     dest = self.install_dir / item.name
                     if item.is_dir():
                         if dest.exists():
@@ -374,28 +268,34 @@ class UpdateChecker:
                     else:
                         shutil.copy2(item, dest)
 
+                logger.info("Updater: root-level files updated.")
+
+            # ----------------------------------------------------------
+            # 4. Save new SHA
+            # ----------------------------------------------------------
+            self._write_local_sha(pending_sha)
             logger.info(
-                "Updater: update to version %s applied successfully.",
-                remote_version,
+                "Updater: update applied successfully (now at %s).",
+                pending_sha[:8],
             )
+
+            # Clean up old backups (keep last 3)
+            self._cleanup_old_backups()
+
             return True
 
         except Exception:
-            logger.exception(
-                "Updater: failed to extract/apply update. Restoring backup."
-            )
-            self._restore_backup(backup_dir)
+            logger.exception("Updater: failed to apply update. Restoring backup.")
+            self._restore_backup(backup_dir, pkg_dir)
             return False
 
     def check_and_apply(self) -> bool:
-        """Convenience method: check for an update and apply it if available.
+        """Check for an update and apply it if available.
 
-        This is the primary entry point called periodically by the main
-        service loop.
+        This is the primary entry point called by the main service loop.
 
         Returns:
-            ``True`` if an update was applied (caller should restart),
-            ``False`` otherwise.
+            True if an update was applied (caller should restart).
         """
         try:
             if not self.check_for_update():
@@ -409,24 +309,34 @@ class UpdateChecker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _restore_backup(self, backup_dir: Path) -> None:
-        """Restore the installation from a backup directory.
-
-        Args:
-            backup_dir: Path to the backup created before the failed update.
-        """
+    def _restore_backup(self, backup_dir: Path, pkg_dir: Path) -> None:
+        """Restore the screenrecord/ package from a backup."""
         try:
-            if backup_dir.exists():
-                # Remove the (possibly corrupted) install dir.
-                if self.install_dir.exists():
-                    shutil.rmtree(self.install_dir)
-                shutil.copytree(backup_dir, self.install_dir)
-                logger.info(
-                    "Updater: restored installation from backup %s.", backup_dir
-                )
+            backup_pkg = backup_dir / "screenrecord"
+            if backup_pkg.exists():
+                if pkg_dir.exists():
+                    shutil.rmtree(pkg_dir)
+                shutil.copytree(backup_pkg, pkg_dir)
+                logger.info("Updater: restored from backup %s.", backup_dir)
         except Exception:
             logger.exception(
-                "Updater: CRITICAL -- failed to restore backup from %s. "
-                "Manual intervention required.",
-                backup_dir,
+                "Updater: CRITICAL — failed to restore backup. "
+                "Manual intervention required."
             )
+
+    def _cleanup_old_backups(self, keep: int = 3) -> None:
+        """Remove old backup directories, keeping only the most recent *keep*."""
+        try:
+            backups = sorted(
+                [
+                    d for d in self.install_dir.iterdir()
+                    if d.is_dir() and d.name.startswith("_backup_")
+                ],
+                key=lambda p: p.name,
+                reverse=True,
+            )
+            for old in backups[keep:]:
+                shutil.rmtree(old)
+                logger.debug("Updater: removed old backup %s.", old.name)
+        except Exception:
+            logger.debug("Updater: could not clean up old backups.")

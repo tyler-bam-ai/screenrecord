@@ -333,6 +333,13 @@ install_files() {
     rm -rf "$TMPDIR_EXTRACT"
 
     ok "Files downloaded and extracted"
+
+    # Record the current commit SHA so the auto-updater knows what version
+    # is installed and doesn't re-download on first check.
+    CURRENT_SHA=$(curl -s "https://api.github.com/repos/tyler-bam-ai/screenrecord/commits/main" 2>/dev/null | grep '"sha"' | head -1 | sed 's/.*"sha"[[:space:]]*:[[:space:]]*"\([a-f0-9]*\)".*/\1/' || true)
+    if [ -n "${CURRENT_SHA:-}" ]; then
+        echo "$CURRENT_SHA" > "$INSTALL_DIR/.commit_sha"
+    fi
 }
 
 write_credentials() {
@@ -378,7 +385,7 @@ encryption:
   key_file: "${ENCRYPTION_KEY_PATH:-}"
 
 analysis:
-  enabled: true
+  enabled: false
   gemini_api_key: "${GEMINI_API_KEY}"
   xai_api_key: "${XAI_API_KEY}"
   openrouter_api_key: "${OPENROUTER_API_KEY}"
