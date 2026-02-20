@@ -8,8 +8,10 @@ Protected Health Information (PHI).
 
 import json
 import logging
+import os
 import socket
 from datetime import datetime, timezone
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +86,7 @@ class ComplianceManager:
         )
 
         # Set up a dedicated audit logger that writes JSON lines.
+        # Uses TimedRotatingFileHandler for 12-month retention with daily rotation.
         self._audit_logger = logging.getLogger("hipaa.audit")
         self._audit_logger.setLevel(logging.INFO)
         self._audit_logger.propagate = False
@@ -91,17 +94,24 @@ class ComplianceManager:
         # Avoid adding duplicate handlers if __init__ is called again with
         # the same log path (e.g. in tests).
         if not self._audit_logger.handlers:
-            handler = logging.FileHandler(
-                str(self._audit_log_path), encoding="utf-8"
+            handler = TimedRotatingFileHandler(
+                str(self._audit_log_path),
+                when="midnight",
+                backupCount=365,  # 12 months of daily logs
+                encoding="utf-8",
             )
             handler.setFormatter(logging.Formatter("%(message)s"))
             self._audit_logger.addHandler(handler)
 
-        # Ensure the consent records file exists.
+        # Set restrictive file permissions on audit log (owner read/write only).
+        self._set_secure_permissions(self._audit_log_path)
+
+        # Ensure the consent records file exists with secure permissions.
         if not self._consent_path.exists():
             self._consent_path.write_text(
                 json.dumps([], indent=2) + "\n", encoding="utf-8"
             )
+        self._set_secure_permissions(self._consent_path)
 
         logger.info(
             "ComplianceManager initialised (audit_log=%s, consent_records=%s).",
@@ -336,6 +346,15 @@ class ComplianceManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _set_secure_permissions(path: Path) -> None:
+        """Set file permissions to owner-read/write only (0600)."""
+        try:
+            if path.exists():
+                os.chmod(path, 0o600)
+        except OSError as exc:
+            logger.warning("Could not set permissions on %s: %s", path, exc)
+
     def _load_consent_records(self) -> list[dict]:
         """Load the consent records JSON file, returning a list of dicts."""
         try:
