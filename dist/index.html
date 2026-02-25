@@ -179,6 +179,22 @@ body {
   border-color: var(--text-dim);
 }
 
+.btn-success-outline {
+  background: transparent;
+  color: var(--green);
+  border: 1px solid var(--green);
+}
+.btn-success-outline:hover:not(:disabled) {
+  background: rgba(34,197,94,0.12);
+}
+.btn-stop-outline {
+  background: transparent;
+  color: #f97316;
+  border: 1px solid #f97316;
+}
+.btn-stop-outline:hover:not(:disabled) {
+  background: rgba(249,115,22,0.12);
+}
 .btn-danger-outline {
   background: transparent;
   color: var(--red);
@@ -1050,6 +1066,7 @@ function formatLastSeen(minutes) {
  * Get status color class based on heartbeat age.
  */
 function getStatusClass(minutes, statusField) {
+  if (statusField === 'paused') return 'yellow';
   if (statusField === 'stopped' || statusField === 'error') return 'red';
   if (minutes <= 10) return 'green';
   if (minutes <= 30) return 'yellow';
@@ -1060,6 +1077,7 @@ function getStatusClass(minutes, statusField) {
  * Get status label based on class.
  */
 function getStatusLabel(statusClass, statusField) {
+  if (statusField === 'paused') return 'paused';
   if (statusField === 'stopped') return 'stopped';
   if (statusField === 'error') return 'error';
   if (statusClass === 'green') return 'recording';
@@ -1308,6 +1326,10 @@ function renderMachines(machines) {
       <td class="mono">${m._uptime ? esc(m._uptime) + 'h' : '--'}</td>
       <td>
         <div class="actions-cell">
+          ${m._statusLabel === 'paused'
+            ? `<button class="btn btn-success-outline btn-sm" onclick="sendCommand('${esc(m._computer)}', 'start')">&#9654; Start</button>`
+            : `<button class="btn btn-stop-outline btn-sm" onclick="sendCommand('${esc(m._computer)}', 'stop')">&#9646;&#9646; Stop</button>`
+          }
           <button class="btn btn-danger-outline btn-sm" onclick="confirmRestart('${esc(m._computer)}', '${esc(m._employee)}')">Restart</button>
         </div>
       </td>
@@ -1394,6 +1416,29 @@ function handleRecordingsSearch(e) {
     const val = e.target.value.trim();
     renderRecordings(allRecordings, val);
   }, 250);
+}
+
+// ===== REMOTE COMMANDS =====
+
+async function sendCommand(computer, command) {
+  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
+    showToast('Apps Script URL not configured in dashboard settings.', 'error');
+    return;
+  }
+  const label = command === 'start' ? 'Starting' : command === 'stop' ? 'Pausing' : 'Restarting';
+  showToast(`${label} ${computer}...`, 'info');
+  try {
+    await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ computer_name: computer, command }),
+      mode: 'no-cors',
+    });
+    const doneLabel = command === 'start' ? 'Start' : command === 'stop' ? 'Stop' : 'Restart';
+    showToast(`${doneLabel} command sent to ${computer}. Takes ~30 seconds.`, 'success');
+  } catch (err) {
+    showToast(`Command failed: ${err.message}`, 'error');
+  }
 }
 
 // ===== RESTART FUNCTIONALITY =====

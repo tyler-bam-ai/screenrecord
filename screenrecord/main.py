@@ -74,14 +74,31 @@ class ScreenRecordService:
             file_handler.setFormatter(logging.Formatter(log_format))
             root_logger.addHandler(file_handler)
 
+    @staticmethod
+    def _paused_flag_path() -> Path:
+        """Return the path of the paused flag file."""
+        return Path.home() / ".screenrecord" / ".paused"
+
+    @staticmethod
+    def _is_paused() -> bool:
+        return ScreenRecordService._paused_flag_path().exists()
+
+    @staticmethod
+    def _set_paused(paused: bool) -> None:
+        flag = ScreenRecordService._paused_flag_path()
+        if paused:
+            flag.touch()
+        elif flag.exists():
+            flag.unlink()
+
     def start(self):
         """Initialize all components and start the recording pipeline."""
         employee_name = self.config.get("employee_name", "Unknown")
         computer_name = self.config.get("computer_name", "Unknown")
+        paused = self._is_paused()
         logger.info(
-            "Starting ScreenRecordService for %s on %s",
-            employee_name,
-            computer_name,
+            "Starting ScreenRecordService for %s on %s (paused=%s)",
+            employee_name, computer_name, paused,
         )
 
         # Import and initialize components
@@ -92,7 +109,8 @@ class ScreenRecordService:
         from .updater import UpdateChecker
         from .uploader import DriveUploader
 
-        self.recorder = ScreenRecorder(self.config)
+        if not paused:
+            self.recorder = ScreenRecorder(self.config)
         self.uploader = DriveUploader(self.config)
 
         analysis_cfg = self.config.get("analysis", {})
@@ -131,42 +149,46 @@ class ScreenRecordService:
 
         # Initialize HIPAA compliance manager
         self.compliance = ComplianceManager(self.config)
-        self.compliance.log_event("recording_start", {
+        self.compliance.log_event("recording_start" if not paused else "security_event", {
             "employee_name": employee_name,
             "computer_name": computer_name,
+            "mode": "paused" if paused else "recording",
         })
 
-        # Verify screen recording permission before starting
-        from . import platform_utils
-        if not platform_utils.check_screen_recording_permission():
-            msg = (
-                "\n"
-                "========================================================\n"
-                "  FATAL: Screen recording permission is NOT granted.\n"
-                "\n"
-                "  Go to: System Settings → Privacy & Security\n"
-                "         → Screen Recording → Enable python3 / Terminal\n"
-                "\n"
-                "  Then restart the service:\n"
-                "    launchctl unload ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
-                "    launchctl load ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
-                "========================================================"
+        if not paused:
+            # Verify screen recording permission before starting
+            from . import platform_utils
+            if not platform_utils.check_screen_recording_permission():
+                msg = (
+                    "\n"
+                    "========================================================\n"
+                    "  FATAL: Screen recording permission is NOT granted.\n"
+                    "\n"
+                    "  Go to: System Settings → Privacy & Security\n"
+                    "         → Screen Recording → Enable python3 / Terminal\n"
+                    "\n"
+                    "  Then restart the service:\n"
+                    "    launchctl unload ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
+                    "    launchctl load ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
+                    "========================================================"
+                )
+                logger.critical(msg)
+                print(msg, flush=True)
+                raise RuntimeError("Screen recording permission not granted.")
+
+            # Start the screen recorder
+            self.recorder.start()
+            logger.info("Screen recorder started")
+
+            # Start the processing pipeline thread (handles upload + analysis)
+            self._upload_thread = threading.Thread(
+                target=self._processing_pipeline,
+                name="processing-pipeline",
+                daemon=True,
             )
-            logger.critical(msg)
-            print(msg, flush=True)
-            raise RuntimeError("Screen recording permission not granted. See above for instructions.")
-
-        # Start the screen recorder
-        self.recorder.start()
-        logger.info("Screen recorder started")
-
-        # Start the processing pipeline thread (handles upload + analysis)
-        self._upload_thread = threading.Thread(
-            target=self._processing_pipeline,
-            name="processing-pipeline",
-            daemon=True,
-        )
-        self._upload_thread.start()
+            self._upload_thread.start()
+        else:
+            logger.info("Service starting in PAUSED mode — recording is suspended.")
 
         # Start heartbeat sender
         try:
@@ -242,11 +264,12 @@ class ScreenRecordService:
             self.stop_event.wait(timeout=update_interval)
 
     def _command_poll_loop(self):
-        """Poll Google Sheets for restart commands and update machine status every 30 seconds."""
+        """Poll Google Sheets for commands and update machine status every 30 seconds."""
         poll_interval = 30
         computer_name = self.config.get("computer_name", "Unknown")
         employee_name = self.config.get("employee_name", "Unknown")
         client_name = self.config.get("client_name", "Unknown")
+        paused = self._is_paused()
         while not self.stop_event.is_set():
             self.stop_event.wait(timeout=poll_interval)
             if self.stop_event.is_set():
@@ -257,33 +280,39 @@ class ScreenRecordService:
                 # Update machine status in Sheets
                 segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
                 uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
+                current_status = "paused" if paused else "recording"
                 self.sheets_backend.update_machine(
                     computer_name=computer_name,
                     employee_name=employee_name,
                     client_name=client_name,
-                    status="recording",
+                    status=current_status,
                     segments_uploaded=segments,
                     uptime_hours=round(uptime, 2),
                 )
                 commands = self.sheets_backend.check_commands(computer_name)
                 for cmd in commands:
-                    if cmd["command"] in ("restart", "stop"):
-                        logger.info(
-                            "Received '%s' command from dashboard (row %d).",
-                            cmd["command"],
-                            cmd["row_number"],
-                        )
-                        self.sheets_backend.mark_command_executed(cmd["row_number"])
-                        if cmd["command"] == "restart":
-                            logger.info("Restarting service per remote command...")
-                            self.stop()
-                            os.execv(
-                                sys.executable,
-                                [sys.executable] + sys.argv,
-                            )
-                        elif cmd["command"] == "stop":
-                            logger.info("Stopping service per remote command...")
-                            self.stop()
+                    command = cmd["command"]
+                    if command not in ("restart", "stop", "start"):
+                        continue
+                    logger.info(
+                        "Received '%s' command from dashboard (row %d).",
+                        command, cmd["row_number"],
+                    )
+                    self.sheets_backend.mark_command_executed(cmd["row_number"])
+                    if command == "restart":
+                        logger.info("Restarting service per remote command...")
+                        self._set_paused(False)
+                        self.stop()
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                    elif command == "stop":
+                        logger.info("Pausing service per remote command...")
+                        self._set_paused(True)
+                        self.stop()
+                    elif command == "start":
+                        logger.info("Starting recording per remote command...")
+                        self._set_paused(False)
+                        self.stop()
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
             except Exception:
                 logger.exception("Error polling for commands")
 
