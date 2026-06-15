@@ -228,8 +228,10 @@ check_ffmpeg() {
         fi
 
         # Method 1: Use imageio-ffmpeg pip package (most reliable — downloads from PyPI)
+        # --break-system-packages so this still works on externally-managed (PEP 668) Pythons.
         info "Installing FFmpeg via Python package..."
-        "$PYTHON3_BIN" -m pip install imageio-ffmpeg --quiet 2>/dev/null
+        "$PYTHON3_BIN" -m pip install imageio-ffmpeg --quiet --user --break-system-packages 2>/dev/null \
+            || "$PYTHON3_BIN" -m pip install imageio-ffmpeg --quiet 2>/dev/null
         FFMPEG_EXE=$("$PYTHON3_BIN" -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" 2>/dev/null)
         if [ -n "${FFMPEG_EXE:-}" ] && [ -x "$FFMPEG_EXE" ]; then
             cp "$FFMPEG_EXE" "$INSTALL_DIR/bin/ffmpeg"
@@ -418,17 +420,32 @@ install_dependencies() {
         REQ_FILE="$INSTALL_DIR/requirements.txt"
     fi
 
-    if [ -f "$REQ_FILE" ]; then
-        PIP_OUTPUT=$("$PYTHON3_BIN" -m pip install -r "$REQ_FILE" 2>&1)
-        PIP_EXIT=$?
-        if [ $PIP_EXIT -ne 0 ]; then
-            echo "$PIP_OUTPUT" | tail -20
-            fail "Failed to install Python dependencies (exit code $PIP_EXIT)"
-        fi
-        ok "Dependencies installed"
-    else
+    if [ ! -f "$REQ_FILE" ]; then
         fail "No requirements file found at $INSTALL_DIR"
     fi
+
+    # Install into an isolated virtual environment. Modern macOS Pythons
+    # (Homebrew, system) are "externally managed" and block a plain
+    # `pip install` (PEP 668); a venv sidesteps that entirely and keeps the
+    # service's dependencies separate from the rest of the machine.
+    VENV_DIR="$INSTALL_DIR/venv"
+    rm -rf "$VENV_DIR"
+    if "$PYTHON3_BIN" -m venv "$VENV_DIR" >/dev/null 2>&1 && [ -x "$VENV_DIR/bin/python3" ]; then
+        # Repoint everything downstream (plist, drive check, startup) at the venv.
+        PYTHON3_BIN="$VENV_DIR/bin/python3"
+        ok "Virtual environment created"
+        PIP_OUTPUT=$("$PYTHON3_BIN" -m pip install -r "$REQ_FILE" 2>&1)
+    else
+        # Fallback if venv is unavailable: user-site install, overriding PEP 668.
+        info "venv unavailable; installing into user site"
+        PIP_OUTPUT=$("$PYTHON3_BIN" -m pip install --user --break-system-packages -r "$REQ_FILE" 2>&1)
+    fi
+    PIP_EXIT=$?
+    if [ $PIP_EXIT -ne 0 ]; then
+        echo "$PIP_OUTPUT" | tail -20
+        fail "Failed to install Python dependencies (exit code $PIP_EXIT)"
+    fi
+    ok "Dependencies installed"
 }
 
 record_consent() {
