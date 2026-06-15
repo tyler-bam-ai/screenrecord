@@ -939,15 +939,15 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
 <div class="modal-overlay" id="confirm-modal">
   <div class="modal" style="max-width: 420px;">
     <div class="modal-header">
-      <h3>Confirm Restart</h3>
+      <h3 id="confirm-title">Confirm</h3>
       <button class="modal-close" id="confirm-modal-close">&times;</button>
     </div>
     <div class="modal-body">
       <div class="confirm-dialog">
-        <p>Are you sure you want to restart<br><span class="confirm-name" id="confirm-machine-name"></span>?</p>
+        <p id="confirm-question">Are you sure?<br><span class="confirm-name" id="confirm-machine-name"></span></p>
         <div class="btn-row">
           <button class="btn btn-outline btn-sm" id="confirm-cancel-btn">Cancel</button>
-          <button class="btn btn-danger-outline btn-sm" id="confirm-ok-btn">Restart</button>
+          <button class="btn btn-danger-outline btn-sm" id="confirm-ok-btn">Confirm</button>
         </div>
       </div>
     </div>
@@ -962,11 +962,11 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
      ============================================================ -->
 <script>
 // ===== CONFIGURATION =====
-const SHEET_ID = 'YOUR_SHEET_ID_HERE';
-const APPS_SCRIPT_URL = 'YOUR_APPS_SCRIPT_URL_HERE';
-const DASHBOARD_PASSWORD = 'bam2024';
-const MACHINES_TAB = 'machines';
-const RECORDINGS_TAB = 'recordings';
+const SHEET_ID = '1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz5MXgQZUTt7OSfmKN0OwOEfyqBV6I77-kbkNTvXJXePD4V0KxB668iNl3G8nYKMqKVWw/exec';
+const DASHBOARD_PASSWORD = 'SinusRecord2026';
+const MACHINES_TAB = 'Machines';
+const RECORDINGS_TAB = 'Recordings';
 const REFRESH_INTERVAL_MS = 30000;
 const MAX_RECORDINGS_SHOWN = 50;
 // ===========================
@@ -1327,10 +1327,10 @@ function renderMachines(machines) {
       <td>
         <div class="actions-cell">
           ${m._statusLabel === 'paused'
-            ? `<button class="btn btn-success-outline btn-sm" onclick="sendCommand('${esc(m._computer)}', 'start')">&#9654; Start</button>`
-            : `<button class="btn btn-stop-outline btn-sm" onclick="sendCommand('${esc(m._computer)}', 'stop')">&#9646;&#9646; Stop</button>`
+            ? `<button class="btn btn-success-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'start')">&#9654; Start</button>`
+            : `<button class="btn btn-stop-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'stop')">&#9646;&#9646; Stop</button>`
           }
-          <button class="btn btn-danger-outline btn-sm" onclick="confirmRestart('${esc(m._computer)}', '${esc(m._employee)}')">Restart</button>
+          <button class="btn btn-danger-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'restart')">Restart</button>
         </div>
       </td>
     </tr>
@@ -1441,46 +1441,49 @@ async function sendCommand(computer, command) {
   }
 }
 
-// ===== RESTART FUNCTIONALITY =====
+// ===== COMMAND CONFIRMATION =====
+// Every Start / Stop / Restart goes through a confirm dialog so an accidental
+// click can't pause (or resume) someone mid-session.
 
-let pendingRestartComputer = '';
+let pendingCommandComputer = '';
+let pendingCommand = '';
 
-function confirmRestart(computer, employee) {
-  pendingRestartComputer = computer;
+const COMMAND_COPY = {
+  start:   { title: 'Confirm Start',   verb: 'start recording on',     ok: '▶ Start',     okClass: 'btn-success-outline' },
+  stop:    { title: 'Confirm Stop',    verb: 'pause recording on',     ok: '██ Stop', okClass: 'btn-stop-outline' },
+  restart: { title: 'Confirm Restart', verb: 'restart the service on', ok: 'Restart',           okClass: 'btn-danger-outline' },
+};
+
+function confirmCommand(computer, employee, command) {
+  const copy = COMMAND_COPY[command];
+  if (!copy) return;
+  pendingCommandComputer = computer;
+  pendingCommand = command;
+
+  document.getElementById('confirm-title').textContent = copy.title;
+  document.getElementById('confirm-question').innerHTML =
+    `Are you sure you want to ${copy.verb}<br><span class="confirm-name" id="confirm-machine-name"></span>?`;
   document.getElementById('confirm-machine-name').textContent = `${employee} (${computer})`;
+
+  const okBtn = document.getElementById('confirm-ok-btn');
+  okBtn.innerHTML = copy.ok;
+  okBtn.className = `btn ${copy.okClass} btn-sm`;
+
   document.getElementById('confirm-modal').classList.add('active');
 }
 
 function closeConfirmModal() {
   document.getElementById('confirm-modal').classList.remove('active');
-  pendingRestartComputer = '';
+  pendingCommandComputer = '';
+  pendingCommand = '';
 }
 
-async function executeRestart() {
-  const computer = pendingRestartComputer;
+function executeConfirmedCommand() {
+  const computer = pendingCommandComputer;
+  const command = pendingCommand;
   closeConfirmModal();
-
-  if (!computer) return;
-
-  try {
-    showToast(`Sending restart command to ${computer}...`, 'info');
-
-    const resp = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'restart',
-        computer_name: computer
-      }),
-      mode: 'no-cors' // Apps Script may not set CORS headers
-    });
-
-    // With no-cors mode, we won't get a readable response, but the request goes through
-    showToast(`Restart command sent to ${computer}`, 'success');
-  } catch (err) {
-    console.error('Restart failed:', err);
-    showToast(`Failed to restart ${computer}: ${err.message}`, 'error');
-  }
+  if (!computer || !command) return;
+  sendCommand(computer, command);
 }
 
 // ===== VIDEO PLAYER =====
@@ -1674,7 +1677,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Confirm modal
   document.getElementById('confirm-modal-close').addEventListener('click', closeConfirmModal);
   document.getElementById('confirm-cancel-btn').addEventListener('click', closeConfirmModal);
-  document.getElementById('confirm-ok-btn').addEventListener('click', executeRestart);
+  document.getElementById('confirm-ok-btn').addEventListener('click', executeConfirmedCommand);
   document.getElementById('confirm-modal').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeConfirmModal();
   });

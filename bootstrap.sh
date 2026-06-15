@@ -25,6 +25,12 @@ GDRIVE_CREDENTIALS_B64="ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3Rf
 # Google Drive folder ID for uploads
 GDRIVE_FOLDER_ID="0ANdodpyQPc2tUk9PVA"
 
+# Shared dashboard sheet — all agents report status here and poll it for
+# remote stop/start commands. Lives inside the "Screen Recordings" shared
+# drive (the service account has no My-Drive quota, so it cannot create its
+# own). Empty means "create a new one", which fails on quota — keep this set.
+GSHEET_ID="1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU"
+
 # Client / practice name (creates top-level folder on Drive)
 CLIENT_NAME="Texas Sinus Center"
 
@@ -391,7 +397,7 @@ analysis:
   openrouter_api_key: "${OPENROUTER_API_KEY}"
 
 google_sheets:
-  sheet_id: ""
+  sheet_id: "${GSHEET_ID}"
 
 rag:
   enabled: false
@@ -502,6 +508,26 @@ setup_autostart() {
 
 # ── Screen Recording Permission Check ────────────────────────────────────────
 
+screen_permission_denied() {
+    # Pop open the exact System Settings pane so the user only has to flip one
+    # toggle. macOS will not let us grant this automatically — a human click is
+    # required — but we can take them straight to the switch.
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" 2>/dev/null || true
+    echo ""
+    echo "  ========================================================"
+    printf '  \xe2\x9c\x97 Screen Recording permission is needed (one-time setup).\n'
+    echo ""
+    echo "    A System Settings window just opened to the right place."
+    echo "    1. Turn ON the switch next to Terminal."
+    echo "    2. Then run the install command again."
+    echo ""
+    echo "    (If the window didn't open: System Settings > Privacy &"
+    echo "     Security > Screen Recording > turn on Terminal.)"
+    echo "  ========================================================"
+    echo ""
+    exit 1
+}
+
 check_screen_permission() {
     if [ "$OS" != "macos" ]; then
         return 0
@@ -522,17 +548,7 @@ check_screen_permission() {
 
     if [ $RESULT -ne 0 ] || [ ! -s "$TEST_FILE" ]; then
         rm -f "$TEST_FILE"
-        echo ""
-        echo "  ========================================================"
-        echo "  \xe2\x9c\x97 FATAL: Screen recording permission is NOT granted."
-        echo ""
-        echo "    Go to: System Settings \xe2\x86\x92 Privacy & Security"
-        echo "           \xe2\x86\x92 Screen Recording \xe2\x86\x92 Enable Terminal"
-        echo ""
-        echo "    Then re-run this installer."
-        echo "  ========================================================"
-        echo ""
-        exit 1
+        screen_permission_denied
     fi
 
     # Check file is large enough to be a real capture (not empty/black)
@@ -540,17 +556,7 @@ check_screen_permission() {
     rm -f "$TEST_FILE"
 
     if [ "$FILE_SIZE" -lt 1000 ]; then
-        echo ""
-        echo "  ========================================================"
-        echo "  \xe2\x9c\x97 FATAL: Screen recording permission is NOT granted."
-        echo ""
-        echo "    Go to: System Settings \xe2\x86\x92 Privacy & Security"
-        echo "           \xe2\x86\x92 Screen Recording \xe2\x86\x92 Enable Terminal"
-        echo ""
-        echo "    Then re-run this installer."
-        echo "  ========================================================"
-        echo ""
-        exit 1
+        screen_permission_denied
     fi
 
     ok "Screen recording permission verified"

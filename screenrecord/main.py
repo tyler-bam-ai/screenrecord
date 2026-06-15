@@ -11,8 +11,14 @@ import queue
 import signal
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+
+# Commands older than this are ignored on pickup, so a machine that was
+# offline for a long time does not replay an ancient stop/start on boot.
+COMMAND_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 logger = logging.getLogger(__name__)
@@ -91,6 +97,26 @@ class ScreenRecordService:
         elif flag.exists():
             flag.unlink()
 
+    @staticmethod
+    def _command_is_stale(timestamp: Optional[str]) -> bool:
+        """Return True if a queued command is too old to act on.
+
+        Commands carry an ISO-8601 timestamp (UTC) written by the dashboard.
+        A machine that was offline for days should not replay an ancient
+        stop/start when it finally comes back online. If the timestamp can't
+        be parsed we treat the command as fresh (fail open).
+        """
+        if not timestamp:
+            return False
+        try:
+            ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        return age > COMMAND_MAX_AGE_SECONDS
+
     def start(self):
         """Initialize all components and start the recording pipeline."""
         employee_name = self.config.get("employee_name", "Unknown")
@@ -159,13 +185,28 @@ class ScreenRecordService:
             # Verify screen recording permission before starting
             from . import platform_utils
             if not platform_utils.check_screen_recording_permission():
+                # Pop the user straight to the Screen Recording toggle.
+                if sys.platform == "darwin":
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["open",
+                             "x-apple.systempreferences:com.apple.preference.security"
+                             "?Privacy_ScreenCapture"],
+                            check=False,
+                        )
+                    except Exception:
+                        pass
                 msg = (
                     "\n"
                     "========================================================\n"
                     "  FATAL: Screen recording permission is NOT granted.\n"
                     "\n"
-                    "  Go to: System Settings → Privacy & Security\n"
-                    "         → Screen Recording → Enable python3 / Terminal\n"
+                    "  A System Settings window was opened to the right place.\n"
+                    "  Turn ON the switch next to python3 / Terminal.\n"
+                    "\n"
+                    "  (If it didn't open: System Settings → Privacy & Security\n"
+                    "   → Screen Recording → enable python3 / Terminal.)\n"
                     "\n"
                     "  Then restart the service:\n"
                     "    launchctl unload ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
@@ -293,6 +334,13 @@ class ScreenRecordService:
                 for cmd in commands:
                     command = cmd["command"]
                     if command not in ("restart", "stop", "start"):
+                        continue
+                    if self._command_is_stale(cmd.get("timestamp")):
+                        logger.warning(
+                            "Ignoring stale '%s' command (row %d, queued %s).",
+                            command, cmd["row_number"], cmd.get("timestamp"),
+                        )
+                        self.sheets_backend.mark_command_executed(cmd["row_number"])
                         continue
                     logger.info(
                         "Received '%s' command from dashboard (row %d).",
