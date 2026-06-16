@@ -265,19 +265,29 @@ class ScreenRecordService:
             self.rag_system.start_periodic_synthesis()
             logger.info("RAG periodic synthesis started")
 
-        # Start update checker thread (checks hourly)
-        try:
-            self.update_checker = UpdateChecker(self.config)
-            self._update_thread = threading.Thread(
-                target=self._update_check_loop,
-                name="update-checker",
-                daemon=True,
-            )
-            self._update_thread.start()
-            logger.info("Update checker started")
-        except Exception:
-            logger.exception("Failed to start update checker; continuing without it")
+        # Start update checker thread (checks hourly). The bundled/signed .app must
+        # NEVER self-update from git: it would try to overwrite its own read-only
+        # signed bundle (breaking the signature and the Screen Recording grant).
+        # Bundled builds ship updates as new notarized .pkgs via MDM instead. Skip
+        # the updater when frozen (PyInstaller bundle) or when explicitly disabled
+        # via SCREENRECORD_DISABLE_UPDATER (set by app_entry for the bundle).
+        _disable = os.environ.get("SCREENRECORD_DISABLE_UPDATER", "")
+        if getattr(sys, "frozen", False) or _disable not in ("", "0", "false", "False"):
+            logger.info("Auto-updater disabled (bundled/frozen build or env override)")
             self.update_checker = None
+        else:
+            try:
+                self.update_checker = UpdateChecker(self.config)
+                self._update_thread = threading.Thread(
+                    target=self._update_check_loop,
+                    name="update-checker",
+                    daemon=True,
+                )
+                self._update_thread.start()
+                logger.info("Update checker started")
+            except Exception:
+                logger.exception("Failed to start update checker; continuing without it")
+                self.update_checker = None
 
         logger.info("All pipelines running. Waiting for shutdown signal...")
         self.stop_event.wait()
