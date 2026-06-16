@@ -333,7 +333,7 @@ class ScreenRecordService:
                 commands = self.sheets_backend.check_commands(computer_name)
                 for cmd in commands:
                     command = cmd["command"]
-                    if command not in ("restart", "stop", "start"):
+                    if command not in ("restart", "stop", "start", "record_test"):
                         continue
                     if self._command_is_stale(cmd.get("timestamp")):
                         logger.warning(
@@ -361,8 +361,80 @@ class ScreenRecordService:
                         self._set_paused(False)
                         self.stop()
                         os.execv(sys.executable, [sys.executable] + sys.argv)
+                    elif command == "record_test":
+                        logger.info("Recording a 60s test clip per remote command...")
+                        try:
+                            self._record_test_clip(duration=60)
+                        except Exception:
+                            logger.exception("record_test: failed to capture clip")
             except Exception:
                 logger.exception("Error polling for commands")
+
+    def _record_test_clip(self, duration: int = 60) -> None:
+        """Capture a single short clip on demand and push it through the pipeline.
+
+        Triggered by the dashboard's "record_test" command. Lets an operator
+        verify the full capture -> encrypt -> upload -> dashboard path on any
+        machine, remotely, without changing that machine's configured segment
+        length or disturbing the main recording loop.
+
+        Implementation: spin up a throwaway ScreenRecorder limited to *duration*
+        seconds, grab the first completed segment, and hand it to the existing
+        ``_process_segment`` (which encrypts, uploads, and logs to the dashboard
+        using the already-initialized uploader/encryptor/sheets backend). Any
+        extra partial segments from the throwaway recorder are discarded.
+
+        Intended to run while the agent is paused/idle; if the main recorder is
+        already capturing, a concurrent screen capture may fail on macOS, so the
+        recommended flow is to pause the agent first.
+        """
+        import copy
+        from . import platform_utils
+        from .recorder import ScreenRecorder
+
+        if not platform_utils.check_screen_recording_permission():
+            logger.error(
+                "record_test: screen recording permission not granted; skipping."
+            )
+            return
+
+        test_cfg = copy.deepcopy(self.config)
+        test_cfg.setdefault("recording", {})["segment_duration"] = duration
+        test_recorder = ScreenRecorder(test_cfg)
+
+        logger.info("record_test: capturing a %ds clip...", duration)
+        test_recorder.start()
+
+        # Wait for the first full segment (duration + headroom for encode/flush).
+        clip: Optional[str] = None
+        deadline = duration + 30
+        waited = 0.0
+        while waited < deadline:
+            seg = test_recorder.get_completed_segment(timeout=2.0)
+            if seg is not None:
+                clip = str(seg)
+                break
+            waited += 2.0
+
+        test_recorder.stop()
+
+        # Discard any extra partial segments the throwaway recorder produced.
+        while True:
+            extra = test_recorder.get_completed_segment(timeout=0.5)
+            if extra is None:
+                break
+            try:
+                os.remove(str(extra))
+            except OSError:
+                pass
+
+        if clip is None:
+            logger.error("record_test: no clip was produced.")
+            return
+
+        logger.info("record_test: clip ready (%s); processing.", clip)
+        self._process_segment(clip, analysis_enabled=False)
+        logger.info("record_test: done.")
 
     def _processing_pipeline(self):
         """Process completed segments: analyze -> encrypt -> upload -> index -> cleanup.
@@ -550,7 +622,6 @@ class ScreenRecordService:
     def stop(self):
         """Gracefully shut down all components and wait for pipelines to finish."""
         logger.info("Stopping ScreenRecordService...")
-        self.stop_event.set()
 
         if self.compliance:
             self.compliance.log_event("recording_stop", {
@@ -558,12 +629,19 @@ class ScreenRecordService:
                 "computer_name": self.config.get("computer_name", "unknown"),
             })
 
-        # Stop the recorder so no new segments are produced
+        # Stop the recorder FIRST. recorder.stop() enqueues the final in-progress
+        # segment, and we must let the processing pipeline drain it before we tell
+        # the pipeline to exit. Previously stop_event was set here first, so the
+        # pipeline saw the stop signal and drained an empty queue, exiting before
+        # the last segment was enqueued — silently dropping the final recording.
         if self.recorder is not None:
             try:
                 self.recorder.stop()
             except Exception:
                 logger.exception("Error stopping recorder")
+
+        # The final segment is now queued; signal the pipeline to finish draining.
+        self.stop_event.set()
 
         # Stop heartbeat sender
         if self.heartbeat is not None:
