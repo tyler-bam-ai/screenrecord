@@ -287,8 +287,14 @@ class SheetsBackend:
                 break
 
         if row_index is not None:
-            # Update existing row -- preserve installed_at from existing data
+            # Update existing row. Preserve installed_at, and treat client_name +
+            # employee_name as DASHBOARD-OWNED: keep whatever is already in the
+            # sheet so a manual edit from the dashboard sticks (the agent only
+            # provides the initial value on first insert). The agent still owns
+            # status / heartbeat / segments / uptime.
             installed_at = ""
+            existing_client = ""
+            existing_employee = ""
             try:
                 existing = (
                     self._sheets_service.spreadsheets()
@@ -299,16 +305,20 @@ class SheetsBackend:
                     )
                     .execute()
                 )
-                existing_values = existing.get("values", [[]])
-                if existing_values and len(existing_values[0]) >= 8:
-                    installed_at = existing_values[0][7]
+                row0 = (existing.get("values") or [[]])[0]
+                if len(row0) >= 2 and row0[1]:
+                    existing_employee = row0[1]
+                if len(row0) >= 3 and row0[2]:
+                    existing_client = row0[2]
+                if len(row0) >= 8:
+                    installed_at = row0[7]
             except HttpError:
-                logger.warning("Could not read existing installed_at value.")
+                logger.warning("Could not read existing machine row.")
 
             row_data = [
                 computer_name,
-                employee_name,
-                client_name,
+                existing_employee or employee_name,
+                existing_client or client_name,
                 status,
                 now_iso,
                 segments_uploaded,
