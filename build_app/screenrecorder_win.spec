@@ -18,6 +18,10 @@ hiddenimports += [
     "screenrecord.sheets_backend", "screenrecord.config_manager",
     "screenrecord.platform_utils", "screenrecord.input_monitor",
     "yaml", "psutil",
+    # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis
+    # misses these, so name them explicitly or input capture silently no-ops.
+    "pynput.keyboard._win32", "pynput.mouse._win32", "pynput._util.win32",
+    "mss.windows",
 ]
 
 # Bundle ffmpeg.exe — the CI step downloads a static Windows build and drops it

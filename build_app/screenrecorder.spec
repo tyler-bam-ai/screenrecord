@@ -19,6 +19,10 @@ hiddenimports += [
     "screenrecord.sheets_backend", "screenrecord.config_manager",
     "screenrecord.platform_utils", "screenrecord.input_monitor",
     "yaml", "psutil",
+    # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis
+    # misses these, so name them explicitly or input capture silently no-ops.
+    "pynput.keyboard._darwin", "pynput.mouse._darwin", "pynput._util.darwin",
+    "mss.darwin",
 ]
 
 # Bundle the static ffmpeg next to the executable (Contents/MacOS).
