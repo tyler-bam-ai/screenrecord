@@ -665,10 +665,19 @@ class ScreenRecordService:
         if not events_file.exists():
             return
 
+        # PHI masking (optional): produce a masked view of the typed text.
+        masked_file = None
+        try:
+            masked_file = self._mask_events(stem, events_file, out_dir)
+        except Exception:
+            logger.exception("PHI masking step failed for %s", stem)
+
         zip_path = out_dir / f"{stem}.events.zip"
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(events_file, events_file.name)
+                if masked_file and masked_file.exists():
+                    zf.write(masked_file, masked_file.name)
                 if shots_dir.is_dir():
                     for png in sorted(shots_dir.glob("*.png")):
                         zf.write(png, f"{shots_dir.name}/{png.name}")
@@ -688,7 +697,10 @@ class ScreenRecordService:
             logger.exception("Failed to upload input events for %s", stem)
 
         # Clean up local event artifacts.
-        for p in (events_file, zip_path, Path(upload_path)):
+        cleanup = [events_file, zip_path, Path(upload_path)]
+        if masked_file:
+            cleanup.append(masked_file)
+        for p in cleanup:
             try:
                 if p.exists():
                     p.unlink()
@@ -701,6 +713,57 @@ class ScreenRecordService:
                 shots_dir.rmdir()
         except OSError:
             pass
+
+    def _mask_events(self, stem: str, events_file, out_dir):
+        """If PHI masking is enabled, alias PHI in the typed text via Vertex and
+        write a masked view (``<stem>.events.masked.json``). Returns its Path, or
+        None if masking is disabled/unavailable. The persistent alias map (the
+        re-identification key) lives in ~/.screenrecord/alias_map.json so aliases
+        stay consistent across segments and machines that share it."""
+        import json as _json
+        cfg = self.config.get("phi_masking", {})
+        if not cfg.get("enabled", False):
+            return None
+        from .phi_masker import PhiMasker, reconstruct_typed_text, build_vertex_caller
+
+        events = []
+        with open(events_file, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    events.append(_json.loads(line))
+                except ValueError:
+                    pass
+        bursts = reconstruct_typed_text(events)
+        if not bursts:
+            return None
+
+        try:
+            caller = build_vertex_caller(cfg.get("gcp_project", ""),
+                                         cfg.get("gcp_location", "us-central1"),
+                                         cfg.get("model", "gemini-2.5-flash"))
+        except Exception:
+            logger.exception("PHI masking unavailable (Vertex client failed); skipping.")
+            return None
+
+        from pathlib import Path as _Path
+        map_path = _Path.home() / ".screenrecord" / "alias_map.json"
+        alias_map = {}
+        if map_path.exists():
+            try:
+                alias_map = _json.loads(map_path.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        masker = PhiMasker(caller, alias_map)
+        masked, _added = masker.mask_texts(bursts)
+        try:
+            map_path.write_text(_json.dumps(masker.alias_map), encoding="utf-8")
+        except OSError:
+            pass
+
+        out = out_dir / f"{stem}.events.masked.json"
+        out.write_text(_json.dumps({"masked_typed_text": masked}, indent=2), encoding="utf-8")
+        logger.info("PHI masking: wrote masked view for %s (%d bursts)", stem, len(masked))
+        return out
 
     def stop(self):
         """Gracefully shut down all components and wait for pipelines to finish."""
