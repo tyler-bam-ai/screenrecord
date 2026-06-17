@@ -39,6 +39,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "xai_api_key": "",
         "openrouter_api_key": "",
     },
+    "input_monitor": {
+        "enabled": False,
+        "capture_keystroke_text": True,
+        "screenshot_min_interval": 0.0,
+    },
     "rag": {
         "enabled": False,
         "db_path": "rag_db",

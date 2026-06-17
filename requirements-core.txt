@@ -13,3 +13,8 @@ cryptography>=41.0.0
 
 # Utilities
 psutil>=5.9.0
+
+# Input ("DOM") capture: global mouse/keyboard events + annotated screenshots
+pynput>=1.7.6
+mss>=9.0.0
+pillow>=10.0.0

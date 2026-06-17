@@ -57,6 +57,9 @@ class ScreenRecorder:
         # FFmpeg subprocess handle.
         self._process: Optional[subprocess.Popen] = None
         self._current_output: Optional[Path] = None
+        # Monotonic start time of the in-progress segment, so input events can be
+        # stamped with their offset into the video.
+        self._current_segment_started_at: Optional[float] = None
 
         # Threading.
         self._stop_event = threading.Event()
@@ -82,6 +85,16 @@ class ScreenRecorder:
     @property
     def segments_completed(self) -> int:
         return self._segments_completed
+
+    @property
+    def current_segment(self) -> Optional[tuple]:
+        """Return ``(filename, started_at_monotonic)`` for the in-progress
+        segment, or ``None`` if not recording. Used to tie input events to the
+        video they occurred in and their offset into it.
+        """
+        if self._current_output is None or self._current_segment_started_at is None:
+            return None
+        return (self._current_output.name, self._current_segment_started_at)
 
     # ------------------------------------------------------------------
     # Public API
@@ -165,6 +178,7 @@ class ScreenRecorder:
 
             output_path = self._generate_output_path()
             self._current_output = output_path
+            self._current_segment_started_at = time.monotonic()
 
             try:
                 self._launch_ffmpeg(output_path)

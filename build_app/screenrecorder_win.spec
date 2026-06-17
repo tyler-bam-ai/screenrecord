@@ -7,7 +7,8 @@ from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("googleapiclient", "google_auth_httplib2", "google.auth",
-            "google_auth_oauthlib", "google", "cryptography"):
+            "google_auth_oauthlib", "google", "cryptography",
+            "pynput", "mss", "PIL"):
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
@@ -15,7 +16,8 @@ hiddenimports += [
     "screenrecord.recorder", "screenrecord.uploader", "screenrecord.heartbeat",
     "screenrecord.encryption", "screenrecord.compliance", "screenrecord.updater",
     "screenrecord.sheets_backend", "screenrecord.config_manager",
-    "screenrecord.platform_utils", "yaml", "psutil",
+    "screenrecord.platform_utils", "screenrecord.input_monitor",
+    "yaml", "psutil",
 ]
 
 # Bundle ffmpeg.exe — the CI step downloads a static Windows build and drops it

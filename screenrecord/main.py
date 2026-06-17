@@ -44,6 +44,7 @@ class ScreenRecordService:
         self.heartbeat = None
         self.update_checker = None
         self.sheets_backend = None
+        self.input_monitor = None
 
         # Pipeline thread
         self._upload_thread: Optional[threading.Thread] = None
@@ -220,6 +221,23 @@ class ScreenRecordService:
             # Start the screen recorder
             self.recorder.start()
             logger.info("Screen recorder started")
+
+            # Start input ("DOM") capture if enabled: clicks/keystrokes paired
+            # with annotated screenshots, tied to the current video segment.
+            if self.config.get("input_monitor", {}).get("enabled", False):
+                try:
+                    from .input_monitor import InputMonitor
+                    rec = self.recorder
+                    self.input_monitor = InputMonitor(
+                        self.config,
+                        segment_provider=lambda: rec.current_segment,
+                        output_dir=self.config.get("recording", {}).get(
+                            "output_dir", "recordings"),
+                    )
+                    self.input_monitor.start()
+                except Exception:
+                    logger.exception("Failed to start input monitor; continuing without it")
+                    self.input_monitor = None
 
             # Start the processing pipeline thread (handles upload + analysis)
             self._upload_thread = threading.Thread(
@@ -572,6 +590,12 @@ class ScreenRecordService:
                     upload_filename,
                 )
 
+            # Step 3b: Bundle + upload this segment's input events + screenshots.
+            try:
+                self._process_input_events(segment_path)
+            except Exception:
+                logger.exception("Failed to process input events for %s", filename)
+
             # Step 4: Upload the analysis text file to Drive
             if text_file:
                 try:
@@ -629,6 +653,55 @@ class ScreenRecordService:
         except Exception:
             logger.exception("Error processing segment %s", filename)
 
+    def _process_input_events(self, segment_path: str) -> None:
+        """Bundle this segment's input-event log + annotated screenshots into a
+        zip, encrypt it, and upload it alongside the video. No-op if input
+        capture is disabled or the segment produced no events."""
+        import zipfile
+        out_dir = Path(segment_path).parent
+        stem = Path(segment_path).stem
+        events_file = out_dir / f"{stem}.events.jsonl"
+        shots_dir = out_dir / f"{stem}.events"
+        if not events_file.exists():
+            return
+
+        zip_path = out_dir / f"{stem}.events.zip"
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(events_file, events_file.name)
+                if shots_dir.is_dir():
+                    for png in sorted(shots_dir.glob("*.png")):
+                        zf.write(png, f"{shots_dir.name}/{png.name}")
+        except Exception:
+            logger.exception("Failed to bundle input events for %s", stem)
+            return
+
+        upload_path = str(zip_path)
+        if self.encryptor is not None:
+            upload_path = str(self.encryptor.encrypt_in_place(str(zip_path)))
+        try:
+            fid = self.uploader.upload_with_retry(upload_path, delete_after=False)
+            if fid:
+                logger.info("Input events uploaded: %s -> %s",
+                            os.path.basename(upload_path), fid)
+        except Exception:
+            logger.exception("Failed to upload input events for %s", stem)
+
+        # Clean up local event artifacts.
+        for p in (events_file, zip_path, Path(upload_path)):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                pass
+        try:
+            if shots_dir.is_dir():
+                for png in shots_dir.glob("*.png"):
+                    png.unlink()
+                shots_dir.rmdir()
+        except OSError:
+            pass
+
     def stop(self):
         """Gracefully shut down all components and wait for pipelines to finish."""
         logger.info("Stopping ScreenRecordService...")
@@ -638,6 +711,13 @@ class ScreenRecordService:
                 "employee_name": self.config.get("employee_name", "unknown"),
                 "computer_name": self.config.get("computer_name", "unknown"),
             })
+
+        # Stop input capture first so no new events are recorded during shutdown.
+        if self.input_monitor is not None:
+            try:
+                self.input_monitor.stop()
+            except Exception:
+                logger.exception("Error stopping input monitor")
 
         # Stop the recorder FIRST. recorder.stop() enqueues the final in-progress
         # segment, and we must let the processing pipeline drain it before we tell

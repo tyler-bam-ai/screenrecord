@@ -31,8 +31,11 @@ GDRIVE_FOLDER_ID="0ANdodpyQPc2tUk9PVA"
 # own). Empty means "create a new one", which fails on quota — keep this set.
 GSHEET_ID="1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU"
 
-# Client / practice name (creates top-level folder on Drive)
-CLIENT_NAME="Texas Sinus Center"
+# Client / practice name (creates top-level folder on Drive).
+# Default "Unassigned" so installs are never auto-mislabeled; the clinic name is
+# set per machine from the dashboard (and can be overridden at install via the
+# CLIENT_NAME env var). Read live by install_windows.ps1 and build_pkg.sh.
+CLIENT_NAME="Unassigned"
 
 # API Keys (leave empty to disable)
 GEMINI_API_KEY=""
