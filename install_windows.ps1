@@ -96,19 +96,17 @@ if (Test-Path $localExe) {
 }
 Ok "Installed $exeDest"
 
-# --- 4. Auto-start at logon via Scheduled Task -------------------------------
-# Use the ScheduledTasks cmdlets (not schtasks.exe): schtasks writes to stderr
-# when there is no existing task to delete, which trips $ErrorActionPreference
-# = "Stop" and aborts the install. The cmdlets honor -ErrorAction cleanly.
-$taskName = "ScreenRecordAgent"
-$action   = New-ScheduledTaskAction -Execute $exeDest
-$trigger  = New-ScheduledTaskTrigger -AtLogOn
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Force | Out-Null
-Ok "Auto-start registered (Scheduled Task '$taskName', runs at logon)"
+# --- 4. Auto-start at logon (per-user Run key, no admin needed) --------------
+# A Scheduled Task via Register-ScheduledTask needs elevation (Access denied for
+# a standard user), and schtasks.exe writes to stderr when deleting a missing
+# task (trips ErrorActionPreference=Stop). The per-user Run key under HKCU is
+# always writable by the current user and starts the agent at every logon.
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+Set-ItemProperty -Path $runKey -Name "ScreenRecordAgent" -Value "`"$exeDest`""
+Ok "Auto-start registered (per-user logon Run entry)"
 
 # --- 5. Start it now ---------------------------------------------------------
 Start-Process -FilePath $exeDest
 Ok "Screen Recorder is running. It will appear on the dashboard within ~1 minute."
 Write-Host ""
-Write-Host "To uninstall: schtasks /Delete /TN $taskName /F; Remove-Item -Recurse -Force '$installDir','$dataDir'"
+Write-Host "To uninstall: Remove-ItemProperty '$runKey' ScreenRecordAgent; Stop-Process -Name ScreenRecorder -Force; Remove-Item -Recurse -Force '$installDir','$dataDir'"
