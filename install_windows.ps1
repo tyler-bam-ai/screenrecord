@@ -97,9 +97,14 @@ if (Test-Path $localExe) {
 Ok "Installed $exeDest"
 
 # --- 4. Auto-start at logon via Scheduled Task -------------------------------
+# Use the ScheduledTasks cmdlets (not schtasks.exe): schtasks writes to stderr
+# when there is no existing task to delete, which trips $ErrorActionPreference
+# = "Stop" and aborts the install. The cmdlets honor -ErrorAction cleanly.
 $taskName = "ScreenRecordAgent"
-schtasks /Delete /TN $taskName /F 2>$null | Out-Null
-schtasks /Create /TN $taskName /TR "`"$exeDest`"" /SC ONLOGON /F | Out-Null
+$action   = New-ScheduledTaskAction -Execute $exeDest
+$trigger  = New-ScheduledTaskTrigger -AtLogOn
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Force | Out-Null
 Ok "Auto-start registered (Scheduled Task '$taskName', runs at logon)"
 
 # --- 5. Start it now ---------------------------------------------------------
