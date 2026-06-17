@@ -39,7 +39,8 @@ a = Analysis(
         "google.generativeai", "google_genai", "openai", "httpx",
         "chromadb", "sentence_transformers", "torch", "transformers",
         "flask", "screenrecord.analyzer", "screenrecord.rag_system",
-        "screenrecord.dashboard", "tkinter", "matplotlib", "PIL",
+        "screenrecord.dashboard", "tkinter", "matplotlib",
+        # NOTE: do not exclude PIL — input_monitor needs Pillow (PIL._imaging).
     ],
     noarchive=False,
 )
