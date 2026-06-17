@@ -502,6 +502,10 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
   gap: 6px;
   flex-wrap: wrap;
 }
+/* Editable client cell */
+.client-cell { cursor: pointer; border-radius: 4px; padding: 2px 6px; transition: background 0.15s; }
+.client-cell:hover { background: rgba(255,255,255,0.07); outline: 1px dashed rgba(255,255,255,0.25); }
+.client-cell .set-hint { color: var(--text-dim); font-style: italic; }
 
 /* Empty state */
 .empty-state {
@@ -1322,7 +1326,7 @@ function renderMachines(machines) {
       </td>
       <td>${esc(m._employee)}</td>
       <td class="mono">${esc(m._computer)}</td>
-      <td>${esc(m._client)}</td>
+      <td class="client-cell" title="Click to set the clinic / client name" onclick="editClient('${esc(m._computer)}', '${esc(m._client)}')">${m._client ? esc(m._client) : '<span class="set-hint">+ set name</span>'}</td>
       <td>${esc(formatLastSeen(m._minsAgo))}</td>
       <td class="mono">${esc(m._segments)}</td>
       <td class="mono">${m._uptime ? esc(m._uptime) + 'h' : '--'}</td>
@@ -1447,6 +1451,35 @@ async function sendCommand(computer, command) {
     showToast(`${doneLabel} command sent to ${computer}. ${eta}`, 'success');
   } catch (err) {
     showToast(`Command failed: ${err.message}`, 'error');
+  }
+}
+
+// ===== EDITABLE MACHINE FIELDS =====
+// Click the client cell to set the clinic/client name. The agent preserves
+// whatever is in the sheet, so the edit sticks. Saved via the Apps Script relay.
+function editClient(computer, current) {
+  const val = window.prompt('Clinic / client name for ' + computer + ':', current || '');
+  if (val === null) return;            // cancelled
+  setMachineField(computer, 'client_name', val.trim());
+}
+
+async function setMachineField(computer, field, value) {
+  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
+    showToast('Apps Script URL not configured.', 'error');
+    return;
+  }
+  showToast('Saving ' + field.replace('_', ' ') + ' for ' + computer + '...', 'info');
+  try {
+    await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ computer_name: computer, action: 'set_field', field, value }),
+      mode: 'no-cors',
+    });
+    showToast('Saved. Updating...', 'success');
+    setTimeout(loadMachines, 2000);
+  } catch (err) {
+    showToast('Save failed: ' + err.message, 'error');
   }
 }
 

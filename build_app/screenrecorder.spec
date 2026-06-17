@@ -61,8 +61,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ScreenRecorder",
         "CFBundleDisplayName": "Screen Recorder",
-        "CFBundleShortVersionString": "1.1.1",
-        "CFBundleVersion": "3",
+        "CFBundleShortVersionString": "1.2.0",
+        "CFBundleVersion": "4",
         "LSUIElement": True,          # background agent, no Dock icon
         "LSBackgroundOnly": False,    # still needs a UI session for the TCC prompt
         "NSScreenCaptureUsageDescription":

@@ -25,6 +25,38 @@ function doPost(e) {
     }
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
+    // ---- Editable machine fields (clinic name, employee name) ----------------
+    // Dashboard sends { action:'set_field', computer_name, field, value }. The
+    // agent preserves client_name/employee_name, so a manual edit here sticks.
+    if (data.action === 'set_field') {
+      var FIELD_COL = { client_name: 3, employee_name: 2 };  // Machines cols A..H
+      var col = FIELD_COL[data.field];
+      if (!col) {
+        return ContentService.createTextOutput(
+          JSON.stringify({ success: false, error: 'Unknown field: ' + data.field })
+        ).setMimeType(ContentService.MimeType.JSON);
+      }
+      var msheet = ss.getSheetByName('Machines');
+      if (!msheet) {
+        return ContentService.createTextOutput(
+          JSON.stringify({ success: false, error: 'Machines sheet not found' })
+        ).setMimeType(ContentService.MimeType.JSON);
+      }
+      var names = msheet.getRange('A:A').getValues();
+      for (var i = 1; i < names.length; i++) {
+        if (names[i][0] === computerName) {
+          msheet.getRange(i + 1, col).setValue(data.value || '');
+          return ContentService.createTextOutput(
+            JSON.stringify({ success: true, message: 'Updated ' + data.field })
+          ).setMimeType(ContentService.MimeType.JSON);
+        }
+      }
+      return ContentService.createTextOutput(
+        JSON.stringify({ success: false, error: 'Machine not found: ' + computerName })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ---- Default: queue a remote command (restart/stop/start/record_test) ----
     var sheet = ss.getSheetByName('Commands');
 
     if (!sheet) {
@@ -40,7 +72,7 @@ function doPost(e) {
     return ContentService.createTextOutput(
       JSON.stringify({
         success: true,
-        message: 'Restart command sent to ' + computerName
+        message: 'Command sent to ' + computerName
       })
     ).setMimeType(ContentService.MimeType.JSON);
 
