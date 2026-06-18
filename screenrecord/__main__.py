@@ -79,6 +79,13 @@ def main():
     # Normal operation: start the service
     from .main import ScreenRecordService
 
+    # Best-effort tray icon so the agent runs quietly in the tray (no window).
+    try:
+        from . import tray
+        tray.start_tray()
+    except Exception:
+        pass
+
     service = ScreenRecordService(config)
     try:
         service.start()

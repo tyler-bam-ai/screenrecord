@@ -247,6 +247,9 @@ class ScreenRecorder:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                # The agent runs windowless; without this, Windows gives the
+                # ffmpeg child its own console window (the black box users saw).
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except FileNotFoundError:
             raise RuntimeError(
