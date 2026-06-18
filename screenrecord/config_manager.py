@@ -44,15 +44,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "capture_keystroke_text": True,
         "screenshot_min_interval": 0.0,
     },
-    "phi_masking": {
-        # Alias PHI in captured keystrokes via Vertex AI Gemini (under a Google
-        # Cloud BAA). Produces a masked view; raw stays encrypted, alias map is
-        # the encrypted re-identification key. Requires the Vertex/BAA setup.
-        "enabled": False,
-        "gcp_project": "",
-        "gcp_location": "us-central1",
-        "model": "gemini-2.5-flash",
-    },
     "rag": {
         "enabled": False,
         "db_path": "rag_db",

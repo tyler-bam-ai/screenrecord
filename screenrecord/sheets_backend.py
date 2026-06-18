@@ -39,6 +39,7 @@ MACHINES_HEADERS = [
     "segments_uploaded",
     "uptime_hours",
     "installed_at",
+    "permissions",
 ]
 
 RECORDINGS_HEADERS = [
@@ -246,6 +247,7 @@ class SheetsBackend:
         status: str,
         segments_uploaded: int,
         uptime_hours: float,
+        permissions: str = "ok",
     ) -> None:
         """Upsert a machine row in the Machines tab.
 
@@ -324,8 +326,9 @@ class SheetsBackend:
                 segments_uploaded,
                 uptime_hours,
                 installed_at,
+                permissions,
             ]
-            cell_range = f"{TAB_MACHINES}!A{row_index + 1}:H{row_index + 1}"
+            cell_range = f"{TAB_MACHINES}!A{row_index + 1}:I{row_index + 1}"
             try:
                 self._sheets_service.spreadsheets().values().update(
                     spreadsheetId=self._sheet_id,
@@ -353,11 +356,12 @@ class SheetsBackend:
                 segments_uploaded,
                 uptime_hours,
                 now_iso,  # installed_at = first heartbeat time
+                permissions,
             ]
             try:
                 self._sheets_service.spreadsheets().values().append(
                     spreadsheetId=self._sheet_id,
-                    range=f"{TAB_MACHINES}!A:H",
+                    range=f"{TAB_MACHINES}!A:I",
                     valueInputOption="RAW",
                     insertDataOption="INSERT_ROWS",
                     body={"values": [row_data]},
