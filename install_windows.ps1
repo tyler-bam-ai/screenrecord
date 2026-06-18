@@ -15,7 +15,7 @@
 #   powershell -ExecutionPolicy Bypass -File install_windows.ps1
 # ============================================================================
 param(
-    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/win-v1.0.0/ScreenRecorder.exe",
+    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/win-v1.0.3/ScreenRecorder.exe",
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh"
 )
 $ErrorActionPreference = "Stop"
@@ -85,6 +85,11 @@ Ok "Provisioned $dataDir ($employee / $computer / $client)"
 $installDir = Join-Path $env:LOCALAPPDATA "ScreenRecorder"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $exeDest = Join-Path $installDir "ScreenRecorder.exe"
+
+# Stop any running instance first, or the exe file is locked and the copy below
+# fails (this is an upgrade/reinstall, not just a fresh install).
+Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
 
 $localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
 if (Test-Path $localExe) {
