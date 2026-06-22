@@ -18,6 +18,8 @@ hiddenimports += [
     "screenrecord.encryption", "screenrecord.compliance", "screenrecord.updater",
     "screenrecord.sheets_backend", "screenrecord.config_manager",
     "screenrecord.platform_utils", "screenrecord.input_monitor",
+    "screenrecord.provision", "screenrecord.tray",
+    "screenrecord.macos_permissions",
     "yaml", "psutil",
     # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis
     # misses these, so name them explicitly or input capture silently no-ops.
@@ -27,6 +29,10 @@ hiddenimports += [
 
 # Bundle the static ffmpeg next to the executable (Contents/MacOS).
 binaries += [("bin/ffmpeg", ".")]
+
+# Bake the deployment values so the agent can self-provision its config on first
+# login. build_app.sh writes _provision.json from bootstrap.sh before this runs.
+datas += [("_provision.json", ".")]
 
 a = Analysis(
     ["../screenrecord/app_entry.py"],
@@ -61,8 +67,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ScreenRecorder",
         "CFBundleDisplayName": "Screen Recorder",
-        "CFBundleShortVersionString": "1.2.0",
-        "CFBundleVersion": "4",
+        "CFBundleShortVersionString": "1.4.0",
+        "CFBundleVersion": "6",
         "LSUIElement": True,          # background agent, no Dock icon
         "LSBackgroundOnly": False,    # still needs a UI session for the TCC prompt
         "NSScreenCaptureUsageDescription":

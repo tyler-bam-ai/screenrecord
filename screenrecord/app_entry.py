@@ -47,6 +47,11 @@ def _setup_bundle_env() -> None:
 
 def main() -> None:
     _setup_bundle_env()
+    # Self-provision the per-user config if the installer didn't (MDM installs
+    # where the postinstall's console-user detection failed). Runs as the user
+    # at login, so it always has the right home dir. No-op if config exists.
+    from screenrecord import provision
+    provision.ensure_config()
     if "--config" not in sys.argv:
         sys.argv += ["--config", str(Path.home() / ".screenrecord" / "config.yaml")]
     from screenrecord.__main__ import main as real_main

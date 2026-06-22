@@ -1,0 +1,77 @@
+#!/bin/bash
+# Runs as root at install time. Provisions per-user config + credentials and
+# starts the Screen Recorder agent for the logged-in user. Placeholders
+# (__GCREDS__ etc.) are filled in by build_pkg.sh.
+set -u
+
+# Detect the GUI console user. scutil is reliable in the MDM/root install
+# context; stat -f%Su /dev/console returns "root" there even when a user is
+# logged in, which silently skipped provisioning. If still no user, exit clean:
+# the app self-provisions on the user's next login, so nothing is lost.
+CONSOLE_USER=$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/{print $3}')
+[ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ] && CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+    echo "No logged-in user at install time; app will self-provision at next login."
+    exit 0
+fi
+USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+[ -z "$USER_HOME" ] && exit 0
+
+DIR="$USER_HOME/.screenrecord"
+mkdir -p "$DIR/recordings"
+
+printf '%s' "__GCREDS__" | base64 -d > "$DIR/credentials.json"
+printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
+
+# Friendly identity for the dashboard: real name + short hostname
+# (e.g. "Rebekah Davis" / "Rebekahs-iMac"), matching the original installer.
+# Falls back to the login name if no real name is set.
+EMP=$(dscl . -read "/Users/$CONSOLE_USER" RealName 2>/dev/null | awk 'NR==2{$1=$1;print}')
+[ -z "$EMP" ] && EMP="$CONSOLE_USER"
+COMP=$(hostname -s 2>/dev/null)
+[ -z "$COMP" ] && COMP=$(scutil --get LocalHostName 2>/dev/null || hostname)
+
+cat > "$DIR/config.yaml" <<YAML
+client_name: "__CLIENT__"
+employee_name: "$EMP"
+computer_name: "$COMP"
+
+recording:
+  fps: 5
+  crf: 28
+  segment_duration: 3600
+  output_dir: "$DIR/recordings"
+  audio_device: ""
+
+google_drive:
+  credentials_file: "$DIR/credentials.json"
+  root_folder_id: "__FOLDER__"
+
+encryption:
+  key_file: "$DIR/encryption.key"
+
+analysis:
+  enabled: false
+
+google_sheets:
+  sheet_id: "__SHEET__"
+
+rag:
+  enabled: false
+YAML
+
+chmod 700 "$DIR"
+chmod 400 "$DIR/credentials.json"
+chmod 400 "$DIR/encryption.key"
+chown -R "$CONSOLE_USER" "$DIR"
+
+# Start the agent now for the current user (also auto-starts at every login).
+# bootout is async, so settle before bootstrap, then force-start in case the
+# bootstrap no-ops while the old job is still tearing down.
+UID_N=$(id -u "$CONSOLE_USER")
+launchctl bootout "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
+sleep 2
+launchctl bootstrap "gui/$UID_N" /Library/LaunchAgents/ai.bam.screenrecord.plist 2>/dev/null || true
+sleep 1
+launchctl kickstart -k "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
+exit 0
