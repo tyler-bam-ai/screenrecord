@@ -19,7 +19,7 @@ hiddenimports += [
     "screenrecord.sheets_backend", "screenrecord.config_manager",
     "screenrecord.platform_utils", "screenrecord.input_monitor",
     "screenrecord.provision", "screenrecord.tray",
-    "screenrecord.macos_permissions",
+    "screenrecord.macos_permissions", "screenrecord.diagnostics",
     "yaml", "psutil",
     # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis
     # misses these, so name them explicitly or input capture silently no-ops.
@@ -67,8 +67,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ScreenRecorder",
         "CFBundleDisplayName": "Screen Recorder",
-        "CFBundleShortVersionString": "1.4.0",
-        "CFBundleVersion": "6",
+        "CFBundleShortVersionString": "1.4.4",
+        "CFBundleVersion": "10",
         "LSUIElement": True,          # background agent, no Dock icon
         "LSBackgroundOnly": False,    # still needs a UI session for the TCC prompt
         "NSScreenCaptureUsageDescription":

@@ -45,11 +45,15 @@ class ScreenRecordService:
         self.update_checker = None
         self.sheets_backend = None
         self.input_monitor = None
+        self._recording_blocked_reason: Optional[str] = None
+        self._stopping_lock = threading.Lock()
+        self._shutdown_complete = threading.Event()
 
         # Pipeline thread
         self._upload_thread: Optional[threading.Thread] = None
         self._update_thread: Optional[threading.Thread] = None
         self._command_thread: Optional[threading.Thread] = None
+        self._recording_retry_thread: Optional[threading.Thread] = None
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -124,9 +128,11 @@ class ScreenRecordService:
         computer_name = self.config.get("computer_name", "Unknown")
         paused = self._is_paused()
 
-        # On macOS, ask the OS to show the standard permission prompts (Screen
-        # Recording / Accessibility / Input Monitoring) instead of failing
-        # silently. No-op elsewhere; never fatal.
+        self._upload_diagnostics_once("startup")
+
+        # On macOS, ask the OS to show the Screen Recording prompt instead of
+        # failing silently. The managed package disables the optional input
+        # monitor, so Accessibility/Input Monitoring prompts are not requested.
         try:
             from . import macos_permissions
             macos_permissions.request_all(logger)
@@ -141,13 +147,9 @@ class ScreenRecordService:
         from .compliance import ComplianceManager
         from .encryption import FileEncryptor
         from .heartbeat import HeartbeatSender
-        from .recorder import ScreenRecorder
         from .updater import UpdateChecker
-        from .uploader import DriveUploader
 
-        if not paused:
-            self.recorder = ScreenRecorder(self.config)
-        self.uploader = DriveUploader(self.config)
+        self.uploader = self._init_uploader()
 
         analysis_cfg = self.config.get("analysis", {})
         if analysis_cfg.get("enabled", False):
@@ -177,8 +179,14 @@ class ScreenRecordService:
         encryption_cfg = self.config.get("encryption", {})
         key_file = encryption_cfg.get("key_file", "")
         if key_file and os.path.isfile(key_file):
-            self.encryptor = FileEncryptor.load_key(key_file)
-            logger.info("Encryption enabled (key loaded from %s)", key_file)
+            try:
+                self.encryptor = FileEncryptor.load_key(key_file)
+                logger.info("Encryption enabled (key loaded from %s)", key_file)
+            except Exception:
+                logger.exception("Configured encryption key is invalid.")
+                self.encryptor = None
+                self._recording_blocked_reason = "invalid_encryption_key"
+                self._upload_diagnostics_once("blocked-invalid_encryption_key")
         else:
             self.encryptor = None
             logger.info("Encryption disabled (no key_file configured)")
@@ -190,73 +198,6 @@ class ScreenRecordService:
             "computer_name": computer_name,
             "mode": "paused" if paused else "recording",
         })
-
-        if not paused:
-            # Verify screen recording permission before starting
-            from . import platform_utils
-            if not platform_utils.check_screen_recording_permission():
-                # Pop the user straight to the Screen Recording toggle.
-                if sys.platform == "darwin":
-                    try:
-                        import subprocess
-                        subprocess.run(
-                            ["open",
-                             "x-apple.systempreferences:com.apple.preference.security"
-                             "?Privacy_ScreenCapture"],
-                            check=False,
-                        )
-                    except Exception:
-                        pass
-                msg = (
-                    "\n"
-                    "========================================================\n"
-                    "  FATAL: Screen recording permission is NOT granted.\n"
-                    "\n"
-                    "  A System Settings window was opened to the right place.\n"
-                    "  Turn ON the switch next to python3 / Terminal.\n"
-                    "\n"
-                    "  (If it didn't open: System Settings → Privacy & Security\n"
-                    "   → Screen Recording → enable python3 / Terminal.)\n"
-                    "\n"
-                    "  Then restart the service:\n"
-                    "    launchctl unload ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
-                    "    launchctl load ~/Library/LaunchAgents/com.screenrecord.service.plist\n"
-                    "========================================================"
-                )
-                logger.critical(msg)
-                print(msg, flush=True)
-                raise RuntimeError("Screen recording permission not granted.")
-
-            # Start the screen recorder
-            self.recorder.start()
-            logger.info("Screen recorder started")
-
-            # Start input ("DOM") capture if enabled: clicks/keystrokes paired
-            # with annotated screenshots, tied to the current video segment.
-            if self.config.get("input_monitor", {}).get("enabled", False):
-                try:
-                    from .input_monitor import InputMonitor
-                    rec = self.recorder
-                    self.input_monitor = InputMonitor(
-                        self.config,
-                        segment_provider=lambda: rec.current_segment,
-                        output_dir=self.config.get("recording", {}).get(
-                            "output_dir", "recordings"),
-                    )
-                    self.input_monitor.start()
-                except Exception:
-                    logger.exception("Failed to start input monitor; continuing without it")
-                    self.input_monitor = None
-
-            # Start the processing pipeline thread (handles upload + analysis)
-            self._upload_thread = threading.Thread(
-                target=self._processing_pipeline,
-                name="processing-pipeline",
-                daemon=True,
-            )
-            self._upload_thread.start()
-        else:
-            logger.info("Service starting in PAUSED mode — recording is suspended.")
 
         # Start heartbeat sender
         try:
@@ -277,6 +218,8 @@ class ScreenRecordService:
             logger.exception("Failed to initialize Sheets backend; continuing without it")
             self.sheets_backend = None
 
+        self._update_machine_status_once()
+
         # Start command polling thread (checks for restart commands)
         if self.sheets_backend is not None:
             self._command_thread = threading.Thread(
@@ -286,6 +229,12 @@ class ScreenRecordService:
             )
             self._command_thread.start()
             logger.info("Command poller started")
+
+        if not paused:
+            if not self._start_recording_components():
+                self._start_recording_retry_thread()
+        else:
+            logger.info("Service starting in PAUSED mode — recording is suspended.")
 
         # Start periodic RAG synthesis if enabled
         if self.rag_system is not None:
@@ -316,8 +265,155 @@ class ScreenRecordService:
                 logger.exception("Failed to start update checker; continuing without it")
                 self.update_checker = None
 
+        if self._recording_blocked_reason is None:
+            self._upload_diagnostics_once("running")
+
         logger.info("All pipelines running. Waiting for shutdown signal...")
         self.stop_event.wait()
+        if not self._shutdown_complete.is_set():
+            self._shutdown_complete.wait(timeout=90)
+
+    def _init_uploader(self):
+        try:
+            from .uploader import DriveUploader
+            return DriveUploader(self.config)
+        except Exception:
+            logger.exception("Failed to initialize Drive uploader.")
+            self._recording_blocked_reason = "upload_unavailable"
+            return None
+
+    def _upload_diagnostics_once(self, reason: str) -> None:
+        try:
+            from .diagnostics import upload_diagnostics_bundle
+            upload_diagnostics_bundle(self.config, reason)
+        except Exception:
+            logger.debug("Diagnostics upload skipped", exc_info=True)
+
+    def _permission_status(self) -> str:
+        try:
+            from . import macos_permissions
+            return macos_permissions.check_all()
+        except Exception:
+            return "ok"
+
+    def _dashboard_status(self) -> str:
+        if self._is_paused():
+            return "paused"
+        if self._recording_blocked_reason:
+            return "error"
+        return "recording"
+
+    def _update_machine_status_once(self) -> None:
+        if self.sheets_backend is None:
+            return
+        try:
+            segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
+            uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
+            permissions = self._permission_status()
+            if self._recording_blocked_reason and permissions == "ok":
+                permissions = f"ERROR: {self._recording_blocked_reason}"
+            self.sheets_backend.update_machine(
+                computer_name=self.config.get("computer_name", "Unknown"),
+                employee_name=self.config.get("employee_name", "Unknown"),
+                client_name=self.config.get("client_name", "Unknown"),
+                status=self._dashboard_status(),
+                segments_uploaded=segments,
+                uptime_hours=round(uptime, 2),
+                permissions=permissions,
+            )
+        except Exception:
+            logger.exception("Failed to update machine status")
+
+    def _start_recording_components(self) -> bool:
+        """Try to start capture. Failure keeps the agent alive for dashboarding."""
+        if self._recording_blocked_reason == "invalid_encryption_key":
+            logger.error("Recording blocked: invalid encryption key.")
+            return False
+
+        if self.uploader is None:
+            self.uploader = self._init_uploader()
+            if self.uploader is None:
+                logger.error("Recording blocked: uploader unavailable.")
+                return False
+
+        from . import platform_utils
+        if not platform_utils.check_screen_recording_permission():
+            self._recording_blocked_reason = "needs_screen_recording_permission"
+            if sys.platform == "darwin":
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["open",
+                         "x-apple.systempreferences:com.apple.preference.security"
+                         "?Privacy_ScreenCapture"],
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            logger.error("Recording blocked: screen recording permission unavailable.")
+            self._update_machine_status_once()
+            self._upload_diagnostics_once("blocked-needs_screen_recording_permission")
+            return False
+
+        try:
+            from .recorder import ScreenRecorder
+            self.recorder = ScreenRecorder(self.config)
+            self.recorder.start()
+            self._recording_blocked_reason = None
+            logger.info("Screen recorder started")
+
+            if self.config.get("input_monitor", {}).get("enabled", False):
+                try:
+                    from .input_monitor import InputMonitor
+                    rec = self.recorder
+                    self.input_monitor = InputMonitor(
+                        self.config,
+                        segment_provider=lambda: rec.current_segment,
+                        output_dir=self.config.get("recording", {}).get(
+                            "output_dir", "recordings"),
+                    )
+                    self.input_monitor.start()
+                except Exception:
+                    logger.exception("Failed to start input monitor; continuing without it")
+                    self.input_monitor = None
+
+            if self._upload_thread is None or not self._upload_thread.is_alive():
+                self._upload_thread = threading.Thread(
+                    target=self._processing_pipeline,
+                    name="processing-pipeline",
+                    daemon=True,
+                )
+                self._upload_thread.start()
+            self._update_machine_status_once()
+            return True
+        except Exception:
+            logger.exception("Failed to start recording components")
+            self._recording_blocked_reason = "recorder_start_failed"
+            self._update_machine_status_once()
+            self._upload_diagnostics_once("blocked-recorder_start_failed")
+            return False
+
+    def _start_recording_retry_thread(self) -> None:
+        if self._recording_retry_thread is not None and self._recording_retry_thread.is_alive():
+            return
+        self._recording_retry_thread = threading.Thread(
+            target=self._recording_retry_loop,
+            name="recording-retry",
+            daemon=True,
+        )
+        self._recording_retry_thread.start()
+
+    def _recording_retry_loop(self) -> None:
+        retry_interval = 60
+        while not self.stop_event.is_set() and not self._is_paused():
+            if self.recorder is not None and self.recorder.is_recording:
+                return
+            self.stop_event.wait(timeout=retry_interval)
+            if self.stop_event.is_set() or self._is_paused():
+                return
+            logger.info("Retrying blocked recording startup...")
+            if self._start_recording_components():
+                return
 
     def _update_check_loop(self):
         """Check for updates on startup, then every hour. Auto-restart on update."""
@@ -358,12 +454,10 @@ class ScreenRecordService:
                 # Update machine status in Sheets
                 segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
                 uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
-                current_status = "paused" if paused else "recording"
-                try:
-                    from . import macos_permissions
-                    perms = macos_permissions.check_all()
-                except Exception:
-                    perms = "ok"
+                current_status = self._dashboard_status()
+                perms = self._permission_status()
+                if self._recording_blocked_reason and perms == "ok":
+                    perms = f"ERROR: {self._recording_blocked_reason}"
                 self.sheets_backend.update_machine(
                     computer_name=computer_name,
                     employee_name=employee_name,
@@ -564,11 +658,13 @@ class ScreenRecordService:
             # Step 3: Upload the (encrypted) video to Google Drive
             upload_filename = os.path.basename(upload_path)
             drive_file_id = None
+            uploaded_ok = False
             try:
-                drive_file_id = self.uploader.upload_with_retry(
-                    upload_path, delete_after=False
-                )
+                if self.uploader is None:
+                    raise RuntimeError("Drive uploader is not initialized.")
+                drive_file_id = self.uploader.upload_with_retry(upload_path, delete_after=False)
                 if drive_file_id:
+                    uploaded_ok = True
                     logger.info(
                         "Upload successful: %s -> %s",
                         upload_filename,
@@ -612,9 +708,13 @@ class ScreenRecordService:
                 logger.exception("Failed to process input events for %s", filename)
 
             # Step 4: Upload the analysis text file to Drive
+            text_uploaded_ok = False
             if text_file:
                 try:
+                    if self.uploader is None:
+                        raise RuntimeError("Drive uploader is not initialized.")
                     self.uploader.upload_file(text_file)
+                    text_uploaded_ok = True
                     logger.info("Analysis text uploaded for %s", filename)
                 except Exception:
                     logger.exception(
@@ -648,7 +748,12 @@ class ScreenRecordService:
                     )
 
             # Step 6: Clean up local files
-            for local_file in [upload_path, text_file]:
+            cleanup_files = []
+            if uploaded_ok:
+                cleanup_files.append(upload_path)
+            if text_file and text_uploaded_ok:
+                cleanup_files.append(text_file)
+            for local_file in cleanup_files:
                 if local_file and os.path.exists(local_file):
                     try:
                         os.remove(local_file)
@@ -720,57 +825,66 @@ class ScreenRecordService:
 
     def stop(self):
         """Gracefully shut down all components and wait for pipelines to finish."""
-        logger.info("Stopping ScreenRecordService...")
+        with self._stopping_lock:
+            if self._shutdown_complete.is_set():
+                return
 
-        if self.compliance:
-            self.compliance.log_event("recording_stop", {
-                "employee_name": self.config.get("employee_name", "unknown"),
-                "computer_name": self.config.get("computer_name", "unknown"),
-            })
+            logger.info("Stopping ScreenRecordService...")
 
-        # Stop input capture first so no new events are recorded during shutdown.
-        if self.input_monitor is not None:
-            try:
-                self.input_monitor.stop()
-            except Exception:
-                logger.exception("Error stopping input monitor")
+            if self.compliance:
+                self.compliance.log_event("recording_stop", {
+                    "employee_name": self.config.get("employee_name", "unknown"),
+                    "computer_name": self.config.get("computer_name", "unknown"),
+                })
 
-        # Stop the recorder FIRST. recorder.stop() enqueues the final in-progress
-        # segment, and we must let the processing pipeline drain it before we tell
-        # the pipeline to exit. Previously stop_event was set here first, so the
-        # pipeline saw the stop signal and drained an empty queue, exiting before
-        # the last segment was enqueued — silently dropping the final recording.
-        if self.recorder is not None:
-            try:
-                self.recorder.stop()
-            except Exception:
-                logger.exception("Error stopping recorder")
+            # Stop input capture first so no new events are recorded during shutdown.
+            if self.input_monitor is not None:
+                try:
+                    self.input_monitor.stop()
+                except Exception:
+                    logger.exception("Error stopping input monitor")
 
-        # The final segment is now queued; signal the pipeline to finish draining.
-        self.stop_event.set()
+            # Stop the recorder FIRST. recorder.stop() enqueues the final in-progress
+            # segment, and we must let the processing pipeline drain it before we tell
+            # the pipeline to exit. Previously stop_event was set here first, so the
+            # pipeline saw the stop signal and drained an empty queue, exiting before
+            # the last segment was enqueued — silently dropping the final recording.
+            if self.recorder is not None:
+                try:
+                    self.recorder.stop()
+                except Exception:
+                    logger.exception("Error stopping recorder")
 
-        # Stop heartbeat sender
-        if self.heartbeat is not None:
-            try:
-                self.heartbeat.stop()
-            except Exception:
-                logger.exception("Error stopping heartbeat sender")
+            # The final segment is now queued; signal the pipeline to finish draining.
+            self.stop_event.set()
 
-        # Stop RAG periodic synthesis
-        if self.rag_system is not None:
-            try:
-                self.rag_system.stop()
-            except Exception:
-                logger.exception("Error stopping RAG system")
+            # Stop heartbeat sender
+            if self.heartbeat is not None:
+                try:
+                    self.heartbeat.stop()
+                except Exception:
+                    logger.exception("Error stopping heartbeat sender")
 
-        # Wait for the processing pipeline thread to finish
-        timeout = 30.0
-        if self._upload_thread is not None and self._upload_thread.is_alive():
-            self._upload_thread.join(timeout=timeout)
-            if self._upload_thread.is_alive():
-                logger.warning("Processing pipeline thread did not exit in time")
+            # Stop RAG periodic synthesis
+            if self.rag_system is not None:
+                try:
+                    self.rag_system.stop()
+                except Exception:
+                    logger.exception("Error stopping RAG system")
 
-        logger.info("Service stopped gracefully")
+            # Wait for the processing pipeline thread to finish. When stop() is
+            # triggered by the command-poller thread, the main thread wakes as soon
+            # as stop_event is set; start() waits on _shutdown_complete so the
+            # process cannot exit while this join is still encrypting/uploading the
+            # final segment.
+            timeout = 60.0
+            if self._upload_thread is not None and self._upload_thread.is_alive():
+                self._upload_thread.join(timeout=timeout)
+                if self._upload_thread.is_alive():
+                    logger.warning("Processing pipeline thread did not exit in time")
+
+            logger.info("Service stopped gracefully")
+            self._shutdown_complete.set()
 
     def _signal_handler(self, sig, frame):
         """Handle SIGTERM/SIGINT for graceful shutdown."""

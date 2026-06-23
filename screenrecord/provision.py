@@ -14,8 +14,11 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,141 @@ rag:
 """
 
 
+def _diag(message: str) -> None:
+    """Best-effort early provisioning log, before app logging is configured."""
+    try:
+        dir_ = Path.home() / ".screenrecord"
+        dir_.mkdir(parents=True, exist_ok=True)
+        with open(dir_ / "provision.log", "a", encoding="utf-8") as fh:
+            fh.write(message.rstrip() + "\n")
+    except Exception:
+        pass
+
+
+def _mac_scutil_value(key: str) -> str:
+    if sys.platform != "darwin":
+        return ""
+    try:
+        result = subprocess.run(
+            ["scutil", "--get", key],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _detected_employee() -> str:
+    employee = os.environ.get("USER") or os.environ.get("LOGNAME") or "User"
+    try:
+        import pwd
+        full = pwd.getpwnam(employee).pw_gecos.split(",")[0].strip()
+        if full:
+            employee = full
+    except Exception:
+        pass
+    return employee
+
+
+def _detected_computer() -> str:
+    return (
+        _mac_scutil_value("LocalHostName")
+        or _mac_scutil_value("ComputerName")
+        or socket.gethostname().split(".")[0]
+    )
+
+
+def _valid_key_file(path: Path) -> bool:
+    try:
+        return len(base64.b64decode(path.read_bytes().strip(), validate=True)) == 32
+    except Exception:
+        return False
+
+
+def _load_existing_config(path: Path) -> dict:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_baked_files(dir_: Path, vals: dict) -> None:
+    """Refresh credentials/key from the signed bundle.
+
+    Old installer attempts can leave partial or raw-key files behind. The baked
+    bundle values are the source of truth for managed installs, so refreshing
+    them on launch is safer than trusting whatever state a previous failed
+    install left in the user's home directory.
+    """
+    credentials = dir_ / "credentials.json"
+    key = dir_ / "encryption.key"
+    for p in (credentials, key):
+        if p.exists():
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+    credentials.write_bytes(base64.b64decode(vals["gcreds_b64"]))
+    if not key.exists() or not _valid_key_file(key):
+        key.write_bytes(base64.b64decode(vals["enckey_b64"]))
+    try:
+        os.chmod(credentials, 0o400)
+        os.chmod(key, 0o400)
+    except OSError:
+        pass
+
+
+def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
+    employee = existing.get("employee_name") or _detected_employee()
+    if str(employee).strip().lower() in ("", "unknown", "user"):
+        employee = _detected_employee()
+
+    computer = existing.get("computer_name") or _detected_computer()
+    if str(computer).strip().lower() in ("", "unknown"):
+        computer = _detected_computer()
+
+    rec = existing.get("recording") if isinstance(existing.get("recording"), dict) else {}
+    return {
+        "client_name": existing.get("client_name") or vals.get("client", "Unassigned"),
+        "employee_name": employee,
+        "computer_name": computer,
+        "recording": {
+            "fps": rec.get("fps", 5),
+            "crf": rec.get("crf", 28),
+            "segment_duration": rec.get("segment_duration", 3600),
+            "output_dir": str(dir_ / "recordings"),
+            "audio_device": rec.get("audio_device", "") or "",
+        },
+        "google_drive": {
+            "credentials_file": str(dir_ / "credentials.json"),
+            "root_folder_id": vals.get("folder", ""),
+        },
+        "encryption": {
+            "key_file": str(dir_ / "encryption.key"),
+        },
+        "analysis": {
+            "enabled": False,
+        },
+        "input_monitor": {
+            "enabled": False,
+            "capture_keystroke_text": True,
+            "screenshot_min_interval": 0.0,
+        },
+        "google_sheets": {
+            "sheet_id": vals.get("sheet", ""),
+        },
+        "rag": {
+            "enabled": False,
+        },
+    }
+
+
 def _bundled_provision() -> dict:
     """Load the baked provisioning values from the app bundle, or {} if absent.
 
@@ -70,46 +208,44 @@ def _bundled_provision() -> dict:
 
 
 def ensure_config() -> None:
-    """If the per-user config is missing, write it from the bundled values.
+    """Ensure the per-user config matches the bundled managed-deploy values.
 
-    No-op when the config already exists or when there are no bundled values
-    (e.g. a dev run). Never raises — provisioning failure must not crash the app
-    before the normal config error path runs."""
+    Earlier MDM attempts may have created no config, a partial config, a config
+    pointing at the wrong Sheet, or an invalid raw encryption key. Repair those
+    states in-place so a package upgrade can recover a managed Mac without
+    asking IT to collect logs first.
+    """
     try:
         dir_ = Path.home() / ".screenrecord"
         cfg = dir_ / "config.yaml"
-        if cfg.exists():
-            return
         vals = _bundled_provision()
         if not vals or not vals.get("gcreds_b64"):
             return  # nothing baked in; let the normal "config not found" path run
 
         (dir_ / "recordings").mkdir(parents=True, exist_ok=True)
-        (dir_ / "credentials.json").write_bytes(base64.b64decode(vals["gcreds_b64"]))
-        (dir_ / "encryption.key").write_bytes(base64.b64decode(vals["enckey_b64"]))
+        _write_baked_files(dir_, vals)
 
-        employee = os.environ.get("USER") or os.environ.get("LOGNAME") or "User"
-        try:
-            import pwd
-            full = pwd.getpwnam(employee).pw_gecos.split(",")[0].strip()
-            if full:
-                employee = full
-        except Exception:
-            pass
-        computer = socket.gethostname().split(".")[0]
+        existing = _load_existing_config(cfg) if cfg.exists() else {}
+        normalised = _normalise_config(existing, dir_, vals)
 
-        cfg.write_text(_CONFIG_TEMPLATE.format(
-            client=vals.get("client", "Unassigned"), employee=employee,
-            computer=computer, dir=str(dir_),
-            folder=vals.get("folder", ""), sheet=vals.get("sheet", "")),
-            encoding="utf-8")
+        if existing != normalised:
+            cfg.write_text(
+                yaml.safe_dump(normalised, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            _diag(
+                "Provisioned/repaired config "
+                f"(employee={normalised.get('employee_name')} "
+                f"computer={normalised.get('computer_name')})"
+            )
+
         try:
             os.chmod(dir_, 0o700)
             os.chmod(dir_ / "credentials.json", 0o400)
             os.chmod(dir_ / "encryption.key", 0o400)
         except OSError:
             pass
-        logger.info("Self-provisioned config at %s (employee=%s computer=%s)",
-                    cfg, employee, computer)
+        logger.info("Provisioning verified at %s", cfg)
     except Exception:
+        _diag("Self-provisioning failed; falling back to normal config load.")
         logger.exception("Self-provisioning failed; falling back to normal config load.")

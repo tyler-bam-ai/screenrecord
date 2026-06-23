@@ -4,21 +4,43 @@
 # (__GCREDS__ etc.) are filled in by build_pkg.sh.
 set -u
 
+LOG="/var/tmp/ai.bam.screenrecord.postinstall.log"
+exec >>"$LOG" 2>&1
+echo "==== ScreenRecorder postinstall $(date -u '+%Y-%m-%dT%H:%M:%SZ') ===="
+
 # Detect the GUI console user. scutil is reliable in the MDM/root install
 # context; stat -f%Su /dev/console returns "root" there even when a user is
 # logged in, which silently skipped provisioning. If still no user, exit clean:
 # the app self-provisions on the user's next login, so nothing is lost.
 CONSOLE_USER=$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/{print $3}')
 [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ] && CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
+echo "Console user: ${CONSOLE_USER:-<none>}"
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
     echo "No logged-in user at install time; app will self-provision at next login."
     exit 0
 fi
 USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
-[ -z "$USER_HOME" ] && exit 0
+if [ -z "$USER_HOME" ]; then
+    echo "Could not resolve home directory for $CONSOLE_USER."
+    exit 0
+fi
+echo "User home: $USER_HOME"
 
 DIR="$USER_HOME/.screenrecord"
 mkdir -p "$DIR/recordings"
+
+# Remove older source-install LaunchAgents that used different labels/paths.
+# A stale per-user job can make Mosyle show the app as installed while launchd
+# is still trying to run an obsolete source checkout or old config.
+UID_N=$(id -u "$CONSOLE_USER")
+launchctl bootout "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
+launchctl bootout "gui/$UID_N/com.screenrecord.service" 2>/dev/null || true
+launchctl bootout "gui/$UID_N/com.screenrecord.agent" 2>/dev/null || true
+rm -f "$USER_HOME/Library/LaunchAgents/ai.bam.screenrecord.plist"
+rm -f "$USER_HOME/Library/LaunchAgents/com.screenrecord.service.plist"
+rm -f "$USER_HOME/Library/LaunchAgents/com.screenrecord.agent.plist"
+rm -f /Library/LaunchAgents/com.screenrecord.service.plist
+rm -f /Library/LaunchAgents/com.screenrecord.agent.plist
 
 printf '%s' "__GCREDS__" | base64 -d > "$DIR/credentials.json"
 printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
@@ -66,12 +88,50 @@ chmod 400 "$DIR/encryption.key"
 chown -R "$CONSOLE_USER" "$DIR"
 
 # Start the agent now for the current user (also auto-starts at every login).
-# bootout is async, so settle before bootstrap, then force-start in case the
-# bootstrap no-ops while the old job is still tearing down.
-UID_N=$(id -u "$CONSOLE_USER")
-launchctl bootout "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
-sleep 2
-launchctl bootstrap "gui/$UID_N" /Library/LaunchAgents/ai.bam.screenrecord.plist 2>/dev/null || true
-sleep 1
-launchctl kickstart -k "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
+# bootout is async. Under MDM/root installs, launchctl can return rc=5 if the
+# old job is still tearing down, even though a retry a few seconds later works.
+BOOTSTRAP_RC=1
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if launchctl print "gui/$UID_N/ai.bam.screenrecord" >/dev/null 2>&1; then
+        echo "Waiting for old ai.bam.screenrecord job to unload (attempt $attempt)."
+        sleep 2
+        continue
+    fi
+    launchctl bootstrap "gui/$UID_N" /Library/LaunchAgents/ai.bam.screenrecord.plist
+    BOOTSTRAP_RC=$?
+    echo "launchctl bootstrap attempt $attempt rc=$BOOTSTRAP_RC"
+    [ "$BOOTSTRAP_RC" -eq 0 ] && break
+    sleep 2
+done
+
+KICKSTART_RC=1
+for attempt in 1 2 3 4 5; do
+    launchctl kickstart -k "gui/$UID_N/ai.bam.screenrecord"
+    KICKSTART_RC=$?
+    echo "launchctl kickstart attempt $attempt rc=$KICKSTART_RC"
+    [ "$KICKSTART_RC" -eq 0 ] && break
+    sleep 2
+done
+sleep 3
+{
+    echo "### launchd"
+    launchctl print "gui/$UID_N/ai.bam.screenrecord" 2>&1 | tail -120
+    echo
+    echo "### processes"
+    ps axww -o pid,user,command | grep -E "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|[f]fmpeg" || true
+    echo
+    echo "### screenrecord dir"
+    ls -la "$DIR" 2>&1
+    echo
+    echo "### stdout"
+    tail -80 /tmp/ai.bam.screenrecord.stdout.log 2>&1
+    echo
+    echo "### stderr"
+    tail -80 /tmp/ai.bam.screenrecord.stderr.log 2>&1
+    echo
+    echo "### agent log"
+    tail -120 "$DIR/screenrecord.log" 2>&1
+} > "$DIR/install_diagnostic.txt" 2>&1
+chown "$CONSOLE_USER" "$DIR/install_diagnostic.txt" 2>/dev/null || true
+echo "Wrote $DIR/install_diagnostic.txt"
 exit 0

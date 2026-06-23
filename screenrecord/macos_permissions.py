@@ -1,10 +1,11 @@
-"""Trigger the standard macOS permission prompts at startup.
+"""Trigger the required macOS Screen Recording prompt at startup.
 
 macOS never lets an app *grant* itself Screen Recording / Accessibility / Input
 Monitoring — only the user can, in System Settings. But an app can ask the OS to
-show its own prompt (the "... would like to ... Open System Settings" dialog)
-instead of failing silently. That's the best non-MDM UX available, so we fire
-all three requests on launch. Each call is best-effort and never fatal.
+show the Screen Recording prompt (the "... would like to ... Open System
+Settings" dialog) instead of failing silently. The managed macOS package does
+not use the optional input monitor, so Accessibility/Input Monitoring requests
+are deliberately not fired on launch.
 
 Uses ctypes against the system frameworks so there's no extra dependency to
 bundle (pyobjc isn't in the frozen build).
@@ -19,14 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 def request_all(logger_=None) -> None:
-    """Ask macOS to prompt for Screen Recording, Accessibility, and Input
-    Monitoring. No-op off macOS. Safe to call every launch."""
+    """Ask macOS to prompt for Screen Recording. No-op off macOS."""
     log = logger_ or logger
     if sys.platform != "darwin":
         return
     _request_screen_recording(log)
-    _request_accessibility(log)
-    _request_input_monitoring(log)
+    # Do not request Accessibility/Input Monitoring during normal recorder
+    # startup. They are only needed for the optional input-monitor feature,
+    # which the managed macOS package disables. In frozen launchd builds the
+    # low-level prompt calls for those permissions can crash the process before
+    # it has a chance to report to the dashboard.
 
 
 def _load(framework: str):
@@ -51,8 +54,6 @@ def check_all() -> str:
     missing = []
     if not _granted_screen_recording():
         missing.append("Screen Recording")
-    if not _granted_accessibility():
-        missing.append("Accessibility (DOM)")
     return "ok" if not missing else "MISSING: " + ", ".join(missing)
 
 

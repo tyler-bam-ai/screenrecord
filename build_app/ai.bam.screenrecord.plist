@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent: runs the signed Screen Recorder at login and keeps it alive.
+     Install to ~/Library/LaunchAgents/ai.bam.screenrecord.plist (per user).
+     The app handles its own logging under ~/.screenrecord/. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.bam.screenrecord</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/ScreenRecorder.app/Contents/MacOS/ScreenRecorder</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/ai.bam.screenrecord.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ai.bam.screenrecord.stderr.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

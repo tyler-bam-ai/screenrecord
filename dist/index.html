@@ -919,8 +919,63 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
         <p>Check that the Sheet ID is correct and the "recordings" tab exists.</p>
       </div>
     </div>
+
+    <!-- DOM Activity Section -->
+    <div class="section-header">
+      <h2>DOM Activity <span class="count-badge" id="dom-count">0</span></h2>
+      <div class="search-box">
+        <span class="search-icon">&#x1F50D;</span>
+        <input type="text" id="dom-search" placeholder="Search actions...">
+      </div>
+    </div>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">
+      Every captured user action paired with the screen at that moment, tied to
+      the recording by file and in-video offset.
+    </p>
+    <div id="dom-wrap">
+      <div id="dom-loading" style="padding: 20px;">
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+      </div>
+      <div id="dom-grid" class="dom-grid" style="display:none;"></div>
+      <div id="dom-empty" class="empty-state" style="display: none;">
+        <div class="empty-icon">&#x1F5B1;</div>
+        <h3>No DOM activity yet</h3>
+        <p>User actions appear here once the input monitor captures and uploads them.</p>
+      </div>
+      <div id="dom-error" class="error-state" style="display: none;">
+        <h3>Failed to load DOM activity</h3>
+        <p>Check that the "dom_events" tab exists in the Sheet.</p>
+      </div>
+    </div>
   </div>
 </div>
+
+<!-- DOM EVENT MODAL -->
+<div class="modal-overlay" id="dom-modal">
+  <div class="modal" style="max-width: 920px;">
+    <div class="modal-header">
+      <h3 id="dom-modal-title">User Action</h3>
+      <button class="modal-close" id="dom-modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="dom-modal-body"></div>
+  </div>
+</div>
+
+<style>
+.dom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.dom-card { background: var(--card, #161922); border: 1px solid var(--border, #262a35); border-radius: 10px; overflow: hidden; cursor: pointer; transition: transform .12s, border-color .12s; }
+.dom-card:hover { transform: translateY(-2px); border-color: var(--accent, #4f8cff); }
+.dom-thumb { width: 100%; height: 130px; object-fit: cover; object-position: top left; background: #0b0d12; display: block; }
+.dom-meta { padding: 9px 11px; }
+.dom-type { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 5px; margin-bottom: 5px; }
+.dom-type.click { background: rgba(79,140,255,.16); color: #8db4ff; }
+.dom-type.key { background: rgba(120,200,140,.16); color: #84d49b; }
+.dom-detail { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text, #e6e8ee); word-break: break-all; }
+.dom-sub { font-size: 11px; color: var(--text-dim, #8a90a0); margin-top: 5px; }
+.perm-warn { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: -apple-system, sans-serif; background: rgba(240,160,60,.18); color: #f0a83c; white-space: nowrap; cursor: help; }
+</style>
 
 <!-- ============================================================
      VIDEO PLAYER MODAL
@@ -971,6 +1026,7 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz5MXgQZUTt7OSf
 const DASHBOARD_PASSWORD = 'SinusRecord2026';
 const MACHINES_TAB = 'Machines';
 const RECORDINGS_TAB = 'Recordings';
+const DOM_TAB = 'dom_events';
 const REFRESH_INTERVAL_MS = 30000;
 const MAX_RECORDINGS_SHOWN = 50;
 // ===========================
@@ -978,6 +1034,7 @@ const MAX_RECORDINGS_SHOWN = 50;
 // ===== STATE =====
 let allMachines = [];
 let allRecordings = [];
+let allDomEvents = [];
 let refreshTimer = null;
 
 // ===== UTILITIES =====
@@ -1257,7 +1314,7 @@ async function loadRecordings() {
 }
 
 async function loadAllData() {
-  await Promise.allSettled([loadMachines(), loadRecordings()]);
+  await Promise.allSettled([loadMachines(), loadRecordings(), loadDomEvents()]);
   document.getElementById('last-updated').textContent =
     'Updated: ' + new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -1275,6 +1332,7 @@ function renderMachines(machines) {
     const client = m['client_name'] || m['Client'] || m['client'] || m['Client Name'] || '';
     const segments = m['segments_uploaded'] || m['Segments'] || m['segments'] || m['Segments Uploaded'] || 0;
     const uptime = m['uptime_hours'] || m['Uptime'] || m['uptime'] || m['Uptime Hours'] || 0;
+    const permissions = (m['permissions'] || m['Permissions'] || 'ok').toString();
 
     const minsAgo = minutesSince(heartbeat);
     const statusClass = getStatusClass(minsAgo, status.toLowerCase());
@@ -1290,7 +1348,9 @@ function renderMachines(machines) {
       _minsAgo: minsAgo,
       _statusClass: statusClass,
       _statusLabel: statusLabel,
-      _heartbeat: heartbeat
+      _heartbeat: heartbeat,
+      _permissions: permissions,
+      _permsOk: !/^(missing|error)/i.test(permissions)
     };
   });
 
@@ -1325,7 +1385,7 @@ function renderMachines(machines) {
         </div>
       </td>
       <td>${esc(m._employee)}</td>
-      <td class="mono">${esc(m._computer)}</td>
+      <td class="mono">${esc(m._computer)}${m._permsOk ? '' : `<span class="perm-warn" title="${esc(m._permissions)} — grant in System Settings (or via MDM profile)">&#9888; ${esc(m._permissions.replace(/^MISSING:\s*/i,''))}</span>`}</td>
       <td class="client-cell" title="Click to set the clinic / client name" onclick="editClient('${esc(m._computer)}', '${esc(m._client)}')">${m._client ? esc(m._client) : '<span class="set-hint">+ set name</span>'}</td>
       <td>${esc(formatLastSeen(m._minsAgo))}</td>
       <td class="mono">${esc(m._segments)}</td>
@@ -1429,6 +1489,97 @@ function handleRecordingsSearch(e) {
 }
 
 // ===== REMOTE COMMANDS =====
+
+// ===== DOM ACTIVITY =====
+async function loadDomEvents() {
+  const loading = document.getElementById('dom-loading');
+  const grid = document.getElementById('dom-grid');
+  const empty = document.getElementById('dom-empty');
+  const error = document.getElementById('dom-error');
+  try {
+    const { rows } = await fetchSheetData(DOM_TAB);
+    allDomEvents = rows;
+    loading.style.display = 'none';
+    error.style.display = 'none';
+    renderDomEvents(rows, (document.getElementById('dom-search').value || ''));
+  } catch (e) {
+    loading.style.display = 'none';
+    grid.style.display = 'none';
+    empty.style.display = 'none';
+    error.style.display = 'block';
+  }
+}
+
+function domThumb(id, sz) {
+  return `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=${sz || 'w400'}`;
+}
+
+function renderDomEvents(events, filter = '') {
+  const grid = document.getElementById('dom-grid');
+  const empty = document.getElementById('dom-empty');
+  document.getElementById('dom-count').textContent = events.length;
+  let list = events.slice();
+  list.sort((a, b) => String(b.ts_utc || '').localeCompare(String(a.ts_utc || '')));
+  if (filter) {
+    const f = filter.toLowerCase();
+    list = list.filter(e => Object.values(e).some(v => String(v).toLowerCase().includes(f)));
+  }
+  if (!list.length) {
+    grid.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  grid.style.display = 'grid';
+  grid.innerHTML = list.map((e, i) => {
+    const type = String(e.event_type || '');
+    const isClick = type.includes('click');
+    const cls = isClick ? 'click' : 'key';
+    const thumb = e.thumb
+      ? `<img class="dom-thumb" loading="lazy" src="${e.thumb}" alt="redacted screenshot">`
+      : `<div class="dom-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:12px;">no screenshot</div>`;
+    const off = (e.video_offset_sec !== '' && e.video_offset_sec != null)
+      ? `@ ${Number(e.video_offset_sec).toFixed(1)}s` : '';
+    return `<div class="dom-card" onclick="openDomEvent(${i})">
+      ${thumb}
+      <div class="dom-meta">
+        <span class="dom-type ${cls}">${isClick ? 'click' : 'key'}</span>
+        <div class="dom-detail">${esc(e.detail || '')}</div>
+        <div class="dom-sub">${esc(e.computer_name || '')} &middot; ${esc(off)}</div>
+      </div>
+    </div>`;
+  }).join('');
+  grid._list = list;
+}
+
+function openDomEvent(idx) {
+  const grid = document.getElementById('dom-grid');
+  const e = (grid._list || [])[idx];
+  if (!e) return;
+  const img = e.thumb
+    ? `<img src="${e.thumb}" style="width:100%;border-radius:8px;border:1px solid var(--border,#262a35);" alt="redacted screenshot">`
+    : '<p>No screenshot.</p>';
+  document.getElementById('dom-modal-title').textContent =
+    (String(e.event_type || '').includes('click') ? 'Mouse click' : 'Keystroke') + ' · ' + (e.detail || '');
+  document.getElementById('dom-modal-body').innerHTML = `
+    ${img}
+    <table style="width:100%;margin-top:14px;font-size:13px;">
+      <tr><td style="color:var(--text-dim);padding:4px 8px;">Action</td><td style="font-family:monospace;">${esc(e.detail || '')}</td></tr>
+      <tr><td style="color:var(--text-dim);padding:4px 8px;">Video file</td><td style="font-family:monospace;">${esc(e.video_file || '')}</td></tr>
+      <tr><td style="color:var(--text-dim);padding:4px 8px;">In-video offset</td><td>${esc(String(e.video_offset_sec || ''))} s</td></tr>
+      <tr><td style="color:var(--text-dim);padding:4px 8px;">Timestamp (UTC)</td><td>${esc(e.ts_utc || '')}</td></tr>
+      <tr><td style="color:var(--text-dim);padding:4px 8px;">Machine</td><td>${esc(e.computer_name || '')}</td></tr>
+    </table>`;
+  document.getElementById('dom-modal').classList.add('active');
+}
+
+function closeDomModal() {
+  document.getElementById('dom-modal').classList.remove('active');
+}
+
+function handleDomSearch(e) {
+  renderDomEvents(allDomEvents, e.target.value);
+}
 
 async function sendCommand(computer, command) {
   if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
@@ -1710,6 +1861,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Recordings search
   document.getElementById('recordings-search').addEventListener('input', handleRecordingsSearch);
+  document.getElementById('dom-search').addEventListener('input', handleDomSearch);
+  document.getElementById('dom-modal-close').addEventListener('click', closeDomModal);
+  document.getElementById('dom-modal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('dom-modal')) closeDomModal();
+  });
 
   // Video modal close
   document.getElementById('video-modal-close').addEventListener('click', closeVideoModal);

@@ -79,12 +79,14 @@ def main():
     # Normal operation: start the service
     from .main import ScreenRecordService
 
-    # Best-effort tray icon so the agent runs quietly in the tray (no window).
-    try:
-        from . import tray
-        tray.start_tray()
-    except Exception:
-        pass
+    # Best-effort tray icon on Windows. The macOS build is an LSUIElement
+    # background app and does not need a menu bar helper during MDM startup.
+    if sys.platform.startswith("win"):
+        try:
+            from . import tray
+            tray.start_tray()
+        except Exception:
+            pass
 
     service = ScreenRecordService(config)
     try:
@@ -93,6 +95,10 @@ def main():
         service.stop()
     except Exception as exc:
         print(f"Fatal error: {exc}", file=sys.stderr)
+        try:
+            service._upload_diagnostics_once("fatal-unhandled_exception")
+        except Exception:
+            pass
         service.stop()
         sys.exit(1)
 

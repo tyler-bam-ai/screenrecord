@@ -25,6 +25,7 @@ MIME_TYPES = {
     ".webm": "video/webm",
     ".json": "application/json",
     ".log": "text/plain",
+    ".zip": "application/zip",
 }
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
