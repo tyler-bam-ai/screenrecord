@@ -9,6 +9,7 @@ the config to ``~/.screenrecord/config.yaml``.
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _setup_bundle_env() -> None:
@@ -45,7 +46,27 @@ def _setup_bundle_env() -> None:
     os.environ["SCREENRECORD_DISABLE_UPDATER"] = "1"
 
 
-def main() -> None:
+def _write_early_log(message: str) -> None:
+    try:
+        data_dir = Path.home() / ".screenrecord"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        with (data_dir / "early_startup.log").open("a", encoding="utf-8") as fh:
+            fh.write(message.rstrip() + "\n")
+    except Exception:
+        pass
+
+
+def _record_early_failure(reason: str, error: Any) -> None:
+    _write_early_log(f"{reason}: {error!r}")
+    try:
+        from screenrecord.diagnostics import record_early_failure
+
+        record_early_failure(reason, error)
+    except Exception as diag_exc:
+        _write_early_log(f"diagnostic capture failed: {diag_exc!r}")
+
+
+def _run() -> None:
     _setup_bundle_env()
     # Self-provision the per-user config if the installer didn't (MDM installs
     # where the postinstall's console-user detection failed). Runs as the user
@@ -56,6 +77,19 @@ def main() -> None:
         sys.argv += ["--config", str(Path.home() / ".screenrecord" / "config.yaml")]
     from screenrecord.__main__ import main as real_main
     real_main()
+
+
+def main() -> None:
+    try:
+        _run()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code:
+            _record_early_failure("system_exit", exc)
+        raise
+    except BaseException as exc:
+        _record_early_failure("app_entry_exception", exc)
+        raise
 
 
 if __name__ == "__main__":

@@ -8,6 +8,56 @@ LOG="/var/tmp/ai.bam.screenrecord.postinstall.log"
 exec >>"$LOG" 2>&1
 echo "==== ScreenRecorder postinstall $(date -u '+%Y-%m-%dT%H:%M:%SZ') ===="
 
+write_visible_install_diagnostic() {
+    REASON="$1"
+    SHARED="/Users/Shared/ScreenRecorder_install_diagnostic.txt"
+    {
+        echo "ScreenRecorder install diagnostic"
+        echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "reason=$REASON"
+        echo "console_user=${CONSOLE_USER:-<unknown>}"
+        echo "user_home=${USER_HOME:-<unknown>}"
+        echo
+        echo "### postinstall log"
+        tail -200 "$LOG" 2>&1
+        if [ -n "${DIR:-}" ] && [ -f "$DIR/install_diagnostic.txt" ]; then
+            echo
+            echo "### install diagnostic"
+            cat "$DIR/install_diagnostic.txt" 2>&1
+        fi
+        echo
+        echo "### launchd"
+        if [ -n "${UID_N:-}" ]; then
+            launchctl print "gui/$UID_N/ai.bam.screenrecord" 2>&1 || true
+        else
+            echo "No GUI user UID resolved."
+        fi
+        echo
+        echo "### processes"
+        ps axww -o pid,user,command | grep -E "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|[f]fmpeg" || true
+        echo
+        echo "### app"
+        ls -la /Applications/ScreenRecorder.app 2>&1 || true
+        echo
+        echo "### receipt"
+        pkgutil --pkg-info ai.bam.screenrecord.pkg 2>&1 || true
+    } > "$SHARED" 2>&1
+    chmod 644 "$SHARED" 2>/dev/null || true
+    if [ -n "${CONSOLE_USER:-}" ] && [ "$CONSOLE_USER" != "root" ]; then
+        chown "$CONSOLE_USER" "$SHARED" 2>/dev/null || true
+    fi
+    if [ -n "${USER_HOME:-}" ]; then
+        for DESK in "$USER_HOME/Desktop" "$USER_HOME/Downloads"; do
+            if [ -d "$DESK" ]; then
+                cp "$SHARED" "$DESK/ScreenRecorder_install_diagnostic.txt" 2>/dev/null || true
+                chown "$CONSOLE_USER" "$DESK/ScreenRecorder_install_diagnostic.txt" 2>/dev/null || true
+                chmod 644 "$DESK/ScreenRecorder_install_diagnostic.txt" 2>/dev/null || true
+            fi
+        done
+    fi
+    echo "Wrote visible install diagnostic: $SHARED"
+}
+
 # Detect the GUI console user. scutil is reliable in the MDM/root install
 # context; stat -f%Su /dev/console returns "root" there even when a user is
 # logged in, which silently skipped provisioning. If still no user, exit clean:
@@ -17,11 +67,13 @@ CONSOLE_USER=$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/{print 
 echo "Console user: ${CONSOLE_USER:-<none>}"
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
     echo "No logged-in user at install time; app will self-provision at next login."
+    write_visible_install_diagnostic "no logged-in GUI user at install time"
     exit 0
 fi
 USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 if [ -z "$USER_HOME" ]; then
     echo "Could not resolve home directory for $CONSOLE_USER."
+    write_visible_install_diagnostic "could not resolve user home"
     exit 0
 fi
 echo "User home: $USER_HOME"
@@ -134,4 +186,10 @@ sleep 3
 } > "$DIR/install_diagnostic.txt" 2>&1
 chown "$CONSOLE_USER" "$DIR/install_diagnostic.txt" 2>/dev/null || true
 echo "Wrote $DIR/install_diagnostic.txt"
+
+if [ "$BOOTSTRAP_RC" -ne 0 ] || [ "$KICKSTART_RC" -ne 0 ] || \
+   ! launchctl print "gui/$UID_N/ai.bam.screenrecord" >/dev/null 2>&1 || \
+   ! ps axww -o command | grep -q "[S]creenRecorder.app/Contents/MacOS/ScreenRecorder"; then
+    write_visible_install_diagnostic "agent did not launch cleanly after install"
+fi
 exit 0
