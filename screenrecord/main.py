@@ -11,6 +11,7 @@ import queue
 import signal
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +20,8 @@ from typing import Any, Dict, Optional
 # Commands older than this are ignored on pickup, so a machine that was
 # offline for a long time does not replay an ancient stop/start on boot.
 COMMAND_MAX_AGE_SECONDS = 24 * 60 * 60
+HEALTH_DIAGNOSTIC_MIN_INTERVAL_SECONDS = 30 * 60
+CAPTURE_STALL_GRACE_SECONDS = 15 * 60
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,12 @@ class ScreenRecordService:
         self.sheets_backend = None
         self.input_monitor = None
         self._recording_blocked_reason: Optional[str] = None
+        self._runtime_health_problem: Optional[str] = None
+        self._runtime_health_detail: str = ""
+        self._last_upload_at: Optional[str] = None
+        self._last_upload_error: str = ""
+        self._consecutive_upload_failures: int = 0
+        self._last_health_diagnostic_at: Dict[str, float] = {}
         self._stopping_lock = threading.Lock()
         self._shutdown_complete = threading.Event()
 
@@ -289,6 +298,150 @@ class ScreenRecordService:
         except Exception:
             logger.debug("Diagnostics upload skipped", exc_info=True)
 
+    def _upload_health_diagnostics(self, reason: str) -> None:
+        now = time.monotonic()
+        last = self._last_health_diagnostic_at.get(reason, 0.0)
+        if now - last < HEALTH_DIAGNOSTIC_MIN_INTERVAL_SECONDS:
+            return
+        self._last_health_diagnostic_at[reason] = now
+        self._upload_diagnostics_once(f"health-{reason}")
+
+    def _record_upload_success(self) -> None:
+        self._last_upload_at = datetime.now(timezone.utc).isoformat()
+        self._last_upload_error = ""
+        self._consecutive_upload_failures = 0
+
+    def _record_upload_failure(self, reason: str) -> None:
+        self._last_upload_error = str(reason)[-500:]
+        self._consecutive_upload_failures += 1
+        logger.error("Upload health failure recorded: %s", self._last_upload_error)
+        self._upload_health_diagnostics("upload_failed")
+
+    def _segment_duration_seconds(self) -> int:
+        try:
+            return int(self.config.get("recording", {}).get("segment_duration", 3600))
+        except (TypeError, ValueError):
+            return 3600
+
+    def _heartbeat_uptime_seconds(self) -> float:
+        try:
+            return float(self.heartbeat.uptime_hours) * 3600 if self.heartbeat else 0.0
+        except Exception:
+            return 0.0
+
+    def _refresh_runtime_health(self) -> None:
+        paused = self._is_paused()
+        segment_duration = self._segment_duration_seconds()
+        recorder_active = bool(self.recorder is not None and self.recorder.is_recording)
+        upload_thread_alive = bool(
+            self._upload_thread is not None and self._upload_thread.is_alive()
+        )
+        segments_uploaded = self.heartbeat.segments_uploaded if self.heartbeat else 0
+        uptime_seconds = self._heartbeat_uptime_seconds()
+
+        current_segment_age = None
+        current_output = ""
+        segments_completed = 0
+        last_segment_completed_at = ""
+        last_ffmpeg_error = ""
+        if self.recorder is not None:
+            current_segment_age = self.recorder.current_segment_age_seconds
+            current_output = self.recorder.current_output_path
+            segments_completed = self.recorder.segments_completed
+            last_segment_completed_at = self.recorder.last_segment_completed_at
+            last_ffmpeg_error = self.recorder.last_error
+
+        problem = None
+        detail = ""
+        grace = CAPTURE_STALL_GRACE_SECONDS
+        if not paused and self._recording_blocked_reason:
+            problem = self._recording_blocked_reason
+            detail = self._recording_blocked_reason
+        elif not paused and not recorder_active and uptime_seconds < 180:
+            problem = None
+            detail = "Recorder is starting."
+        elif not paused and not recorder_active:
+            problem = "recorder_not_active"
+            detail = "Recorder object is not active."
+        elif not paused and recorder_active and not upload_thread_alive:
+            problem = "processing_thread_dead"
+            detail = "Recorder is active but the processing/upload thread is not running."
+        elif self._consecutive_upload_failures > 0:
+            problem = "upload_failed"
+            detail = self._last_upload_error
+        elif (
+            not paused
+            and recorder_active
+            and current_segment_age is not None
+            and current_segment_age > segment_duration + grace
+        ):
+            problem = "capture_stalled"
+            detail = (
+                f"Current segment age {int(current_segment_age)}s exceeds "
+                f"segment duration {segment_duration}s plus {grace}s grace."
+            )
+        elif (
+            not paused
+            and recorder_active
+            and segments_uploaded == 0
+            and uptime_seconds > segment_duration + grace
+        ):
+            problem = "no_upload_after_first_segment"
+            detail = (
+                f"No successful uploads after {int(uptime_seconds)}s of uptime; "
+                f"expected first segment after about {segment_duration}s."
+            )
+        elif self._last_upload_at:
+            try:
+                last_upload = datetime.fromisoformat(
+                    self._last_upload_at.replace("Z", "+00:00")
+                )
+                if last_upload.tzinfo is None:
+                    last_upload = last_upload.replace(tzinfo=timezone.utc)
+                upload_age = (
+                    datetime.now(timezone.utc) - last_upload
+                ).total_seconds()
+                if (
+                    not paused
+                    and recorder_active
+                    and upload_age > (2 * segment_duration) + grace
+                    and uptime_seconds > (2 * segment_duration) + grace
+                ):
+                    problem = "upload_stalled"
+                    detail = (
+                        f"Last successful upload was {int(upload_age)}s ago; "
+                        f"expected roughly every {segment_duration}s."
+                    )
+            except ValueError:
+                pass
+
+        self._runtime_health_problem = problem
+        self._runtime_health_detail = detail
+        if problem:
+            logger.warning("Runtime health problem: %s (%s)", problem, detail)
+            self._upload_health_diagnostics(problem)
+
+        if self.heartbeat:
+            self.heartbeat.update_details(
+                runtime_health=problem or "ok",
+                runtime_health_detail=detail[:500],
+                recorder_active=recorder_active,
+                upload_thread_alive=upload_thread_alive,
+                segment_duration_seconds=segment_duration,
+                current_segment_age_seconds=(
+                    round(current_segment_age, 1)
+                    if current_segment_age is not None
+                    else None
+                ),
+                current_output=os.path.basename(current_output) if current_output else "",
+                segments_completed_session=segments_completed,
+                last_segment_completed_at=last_segment_completed_at,
+                last_upload_at=self._last_upload_at or "",
+                last_upload_error=self._last_upload_error,
+                consecutive_upload_failures=self._consecutive_upload_failures,
+                last_ffmpeg_error=last_ffmpeg_error,
+            )
+
     def _permission_status(self) -> str:
         try:
             from . import macos_permissions
@@ -299,7 +452,7 @@ class ScreenRecordService:
     def _dashboard_status(self) -> str:
         if self._is_paused():
             return "paused"
-        if self._recording_blocked_reason:
+        if self._recording_blocked_reason or self._runtime_health_problem:
             return "error"
         return "recording"
 
@@ -307,11 +460,17 @@ class ScreenRecordService:
         if self.sheets_backend is None:
             return
         try:
+            self._refresh_runtime_health()
             segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
             uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
             permissions = self._permission_status()
             if self._recording_blocked_reason and permissions == "ok":
                 permissions = f"ERROR: {self._recording_blocked_reason}"
+            if self._runtime_health_problem:
+                detail = self._runtime_health_detail
+                permissions = f"ERROR: {self._runtime_health_problem}"
+                if detail:
+                    permissions = f"{permissions}: {detail[:180]}"
             self.sheets_backend.update_machine(
                 computer_name=self.config.get("computer_name", "Unknown"),
                 employee_name=self.config.get("employee_name", "Unknown"),
@@ -455,12 +614,18 @@ class ScreenRecordService:
                 if self.sheets_backend is None:
                     continue
                 # Update machine status in Sheets
+                self._refresh_runtime_health()
                 segments = self.heartbeat.segments_uploaded if self.heartbeat else 0
                 uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
                 current_status = self._dashboard_status()
                 perms = self._permission_status()
                 if self._recording_blocked_reason and perms == "ok":
                     perms = f"ERROR: {self._recording_blocked_reason}"
+                if self._runtime_health_problem:
+                    detail = self._runtime_health_detail
+                    perms = f"ERROR: {self._runtime_health_problem}"
+                    if detail:
+                        perms = f"{perms}: {detail[:180]}"
                 self.sheets_backend.update_machine(
                     computer_name=computer_name,
                     employee_name=employee_name,
@@ -668,6 +833,7 @@ class ScreenRecordService:
                 drive_file_id = self.uploader.upload_with_retry(upload_path, delete_after=False)
                 if drive_file_id:
                     uploaded_ok = True
+                    self._record_upload_success()
                     logger.info(
                         "Upload successful: %s -> %s",
                         upload_filename,
@@ -694,11 +860,15 @@ class ScreenRecordService:
                         except Exception:
                             logger.exception("Failed to log recording to Sheets")
                 else:
+                    self._record_upload_failure(
+                        f"upload_returned_no_file_id: {upload_filename}"
+                    )
                     logger.error(
                         "Upload returned no file ID for %s; keeping local file",
                         upload_filename,
                     )
-            except Exception:
+            except Exception as exc:
+                self._record_upload_failure(f"{type(exc).__name__}: {exc}")
                 logger.exception(
                     "Failed to upload segment %s; keeping local file",
                     upload_filename,
@@ -773,7 +943,8 @@ class ScreenRecordService:
                 "Segment fully processed and cleaned up: %s", filename
             )
 
-        except Exception:
+        except Exception as exc:
+            self._record_upload_failure(f"processing_exception: {type(exc).__name__}: {exc}")
             logger.exception("Error processing segment %s", filename)
 
     def _process_input_events(self, segment_path: str) -> None:

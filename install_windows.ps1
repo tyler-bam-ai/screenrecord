@@ -15,7 +15,7 @@
 #   powershell -ExecutionPolicy Bypass -File install_windows.ps1
 # ============================================================================
 param(
-    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/win-v1.0.3/ScreenRecorder.exe",
+    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/win-v1.0.4/ScreenRecorder.exe",
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh"
 )
 $ErrorActionPreference = "Stop"

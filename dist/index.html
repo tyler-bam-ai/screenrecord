@@ -862,8 +862,8 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
             <th>Computer</th>
             <th>Client</th>
             <th>Last Seen</th>
-            <th style="width: 90px;">Segments</th>
-            <th style="width: 90px;">Uptime</th>
+            <th style="width: 120px;">Uploads</th>
+            <th style="width: 90px;">Session</th>
             <th style="width: 100px;">Actions</th>
           </tr>
         </thead>
@@ -975,6 +975,7 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
 .dom-detail { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text, #e6e8ee); word-break: break-all; }
 .dom-sub { font-size: 11px; color: var(--text-dim, #8a90a0); margin-top: 5px; }
 .perm-warn { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: -apple-system, sans-serif; background: rgba(240,160,60,.18); color: #f0a83c; white-space: nowrap; cursor: help; }
+.subtle { color: var(--muted); font-size: 12px; }
 </style>
 
 <!-- ============================================================
@@ -1130,7 +1131,7 @@ function formatLastSeen(minutes) {
  */
 function getStatusClass(minutes, statusField) {
   if (statusField === 'paused') return 'yellow';
-  if (statusField === 'stopped' || statusField === 'error') return 'red';
+  if (statusField === 'stopped' || /error|fail|stalled|blocked/.test(statusField)) return 'red';
   if (minutes <= 10) return 'green';
   if (minutes <= 30) return 'yellow';
   return 'red';
@@ -1142,7 +1143,7 @@ function getStatusClass(minutes, statusField) {
 function getStatusLabel(statusClass, statusField) {
   if (statusField === 'paused') return 'paused';
   if (statusField === 'stopped') return 'stopped';
-  if (statusField === 'error') return 'error';
+  if (/error|fail|stalled|blocked/.test(statusField)) return statusField || 'error';
   if (statusClass === 'green') return 'recording';
   if (statusClass === 'yellow') return 'stale';
   return 'offline';
@@ -1298,6 +1299,7 @@ async function loadRecordings() {
     const { rows } = await fetchSheetData(RECORDINGS_TAB);
     allRecordings = rows;
     renderRecordings(rows);
+    if (allMachines.length) renderMachines(allMachines);
     loadingEl.style.display = 'none';
 
     if (rows.length === 0) {
@@ -1315,6 +1317,7 @@ async function loadRecordings() {
 
 async function loadAllData() {
   await Promise.allSettled([loadMachines(), loadRecordings(), loadDomEvents()]);
+  if (allMachines.length) renderMachines(allMachines);
   document.getElementById('last-updated').textContent =
     'Updated: ' + new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -1322,6 +1325,7 @@ async function loadAllData() {
 // ===== RENDERING =====
 
 function renderMachines(machines) {
+  const recordingStats = buildRecordingStats(allRecordings);
   // Determine status for each machine
   const processed = machines.map(m => {
     // Try common column names (flexible matching)
@@ -1333,10 +1337,17 @@ function renderMachines(machines) {
     const segments = m['segments_uploaded'] || m['Segments'] || m['segments'] || m['Segments Uploaded'] || 0;
     const uptime = m['uptime_hours'] || m['Uptime'] || m['uptime'] || m['Uptime Hours'] || 0;
     const permissions = (m['permissions'] || m['Permissions'] || 'ok').toString();
+    const stats = recordingStats.get(computer) || { total: 0, last: null, lastMinutes: Infinity };
 
     const minsAgo = minutesSince(heartbeat);
-    const statusClass = getStatusClass(minsAgo, status.toLowerCase());
-    const statusLabel = getStatusLabel(statusClass, status.toLowerCase());
+    const rawStatus = status.toLowerCase();
+    let statusClass = getStatusClass(minsAgo, rawStatus);
+    let statusLabel = getStatusLabel(statusClass, rawStatus);
+    const staleUpload = statusClass === 'green' && stats.total === 0 && Number(uptime) > 1.5;
+    if (staleUpload || /^(missing|error)/i.test(permissions)) {
+      statusClass = 'red';
+      statusLabel = staleUpload ? 'no uploads' : statusLabel;
+    }
 
     return {
       ...m,
@@ -1344,13 +1355,16 @@ function renderMachines(machines) {
       _computer: computer,
       _client: client,
       _segments: segments,
+      _recordingTotal: stats.total,
+      _lastRecordingMinutes: stats.lastMinutes,
       _uptime: uptime,
       _minsAgo: minsAgo,
       _statusClass: statusClass,
       _statusLabel: statusLabel,
       _heartbeat: heartbeat,
       _permissions: permissions,
-      _permsOk: !/^(missing|error)/i.test(permissions)
+      _permsOk: !/^(missing|error)/i.test(permissions),
+      _staleUpload: staleUpload
     };
   });
 
@@ -1367,8 +1381,6 @@ function renderMachines(machines) {
   const totalMachines = processed.length;
   const active = processed.filter(m => m._statusClass === 'green').length;
   const offline = processed.filter(m => m._statusClass !== 'green').length;
-  const totalSegments = processed.reduce((sum, m) => sum + (Number(m._segments) || 0), 0);
-
   document.getElementById('stat-total').textContent = totalMachines;
   document.getElementById('stat-active').textContent = active;
   document.getElementById('stat-offline').textContent = offline;
@@ -1385,10 +1397,10 @@ function renderMachines(machines) {
         </div>
       </td>
       <td>${esc(m._employee)}</td>
-      <td class="mono">${esc(m._computer)}${m._permsOk ? '' : `<span class="perm-warn" title="${esc(m._permissions)} — grant in System Settings (or via MDM profile)">&#9888; ${esc(m._permissions.replace(/^MISSING:\s*/i,''))}</span>`}</td>
+      <td class="mono">${esc(m._computer)}${m._permsOk && !m._staleUpload ? '' : `<span class="perm-warn" title="${esc(m._staleUpload ? 'No successful recordings are logged for this active session' : m._permissions)}">&#9888; ${esc(m._staleUpload ? 'no uploads' : m._permissions.replace(/^MISSING:\s*/i,''))}</span>`}</td>
       <td class="client-cell" title="Click to set the clinic / client name" onclick="editClient('${esc(m._computer)}', '${esc(m._client)}')">${m._client ? esc(m._client) : '<span class="set-hint">+ set name</span>'}</td>
       <td>${esc(formatLastSeen(m._minsAgo))}</td>
-      <td class="mono">${esc(m._segments)}</td>
+      <td class="mono" title="Lifetime uploads from Recordings tab / current process uploads">${esc(m._recordingTotal)} total / ${esc(m._segments)} session${m._lastRecordingMinutes !== Infinity ? `<br><span class="subtle">${esc(formatLastSeen(m._lastRecordingMinutes))}</span>` : ''}</td>
       <td class="mono">${m._uptime ? esc(m._uptime) + 'h' : '--'}</td>
       <td>
         <div class="actions-cell">
@@ -1402,6 +1414,24 @@ function renderMachines(machines) {
       </td>
     </tr>
   `).join('');
+}
+
+function buildRecordingStats(recordings) {
+  const stats = new Map();
+  for (const r of recordings || []) {
+    const computer = r['computer_name'] || r['Computer'] || r['computer'] || r['Computer Name'] || '';
+    if (!computer) continue;
+    const timestamp = r['timestamp'] || r['Time'] || r['time'] || r['Timestamp'] || r['created'] || '';
+    const minutes = minutesSince(timestamp);
+    const existing = stats.get(computer) || { total: 0, last: null, lastMinutes: Infinity };
+    existing.total += 1;
+    if (minutes < existing.lastMinutes) {
+      existing.last = timestamp;
+      existing.lastMinutes = minutes;
+    }
+    stats.set(computer, existing);
+  }
+  return stats;
 }
 
 function renderRecordings(recordings, filter = '') {

@@ -59,6 +59,8 @@ class HeartbeatSender:
         self._segments_uploaded: int = 0
         self._started_at: str = datetime.now(timezone.utc).isoformat()
         self._status: str = "recording"
+        self._details: Dict[str, Any] = {}
+        self._details_lock = threading.Lock()
 
         # Threading
         self._stop_event = threading.Event()
@@ -121,6 +123,16 @@ class HeartbeatSender:
         """Update the current status string (e.g. 'recording', 'error')."""
         self._status = status
 
+    def update_details(self, **details: Any) -> None:
+        """Add extra runtime details to the heartbeat payload.
+
+        These fields let the dashboard distinguish "the process is alive" from
+        "capture and upload are healthy" without changing the Machines sheet
+        schema.
+        """
+        with self._details_lock:
+            self._details.update(details)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -161,6 +173,8 @@ class HeartbeatSender:
             "started_at": self._started_at,
             "uptime_hours": uptime_hours,
         }
+        with self._details_lock:
+            payload.update(self._details)
 
         data = json.dumps(payload, indent=2).encode("utf-8")
         filename = f"heartbeat_{self.computer_name}.json"

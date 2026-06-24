@@ -205,7 +205,7 @@ def _best_effort_config(data_dir: Path) -> Dict[str, Any]:
     except Exception as exc:
         return {
             "computer_name": _detect_computer_name(),
-            "employee_name": os.environ.get("USER") or os.environ.get("LOGNAME") or "",
+            "employee_name": _current_user(),
             "client_name": baked.get("client", "Unassigned"),
             "diagnostic_note": f"Could not load config.yaml: {exc}",
             "google_drive": base_drive,
@@ -214,7 +214,7 @@ def _best_effort_config(data_dir: Path) -> Dict[str, Any]:
         }
     return {
         "computer_name": _detect_computer_name(),
-        "employee_name": os.environ.get("USER") or os.environ.get("LOGNAME") or "",
+        "employee_name": _current_user(),
         "client_name": baked.get("client", "Unassigned"),
         "google_drive": base_drive,
         "google_sheets": base_sheets,
@@ -251,7 +251,7 @@ def _expose_local_copy(zip_path: Optional[Path]) -> list:
     if zip_path is None or not zip_path.exists():
         return []
     copied = []
-    target_dirs = [Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"]
+    target_dirs = _easy_copy_dirs()
     for target_dir in target_dirs:
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +278,7 @@ def _write_emergency_failure_note(reason: str, error: Any) -> list:
         + _error_text(error)
     )
     copied = []
-    for target_dir in (Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"):
+    for target_dir in _easy_copy_dirs():
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -328,7 +328,7 @@ def _summary(config: Dict[str, Any], reason: str) -> Dict[str, Any]:
         "frozen": bool(getattr(sys, "frozen", False)),
         "cwd": os.getcwd(),
         "home": str(Path.home()),
-        "user": os.environ.get("USER") or os.environ.get("LOGNAME") or "",
+        "user": _current_user(),
         "employee_name": config.get("employee_name", ""),
         "computer_name": config.get("computer_name", ""),
         "client_name": config.get("client_name", ""),
@@ -368,20 +368,41 @@ def _environment_snapshot() -> str:
         f"executable={sys.executable}",
         f"cwd={os.getcwd()}",
         f"home={Path.home()}",
-        f"user={os.environ.get('USER', '')}",
+        f"user={_current_user()}",
         f"logname={os.environ.get('LOGNAME', '')}",
+        f"username={os.environ.get('USERNAME', '')}",
         f"xpc_service_name={os.environ.get('XPC_SERVICE_NAME', '')}",
         f"path={os.environ.get('PATH', '')}",
     ]
-    for cmd in (
-        ["sw_vers"],
-        ["uname", "-a"],
-        ["id"],
-        ["scutil", "--get", "ComputerName"],
-        ["df", "-h", str(Path.home())],
-        ["ps", "axww", "-o", "pid,ppid,user,stat,command"],
-        ["pkgutil", "--pkg-info", "ai.bam.screenrecord.pkg"],
-    ):
+    if sys.platform == "win32":
+        data_dir = Path.home() / ".screenrecord"
+        rec_dir = data_dir / "recordings"
+        commands = (
+            ["cmd", "/c", "ver"],
+            ["whoami", "/all"],
+            ["query", "user"],
+            ["tasklist", "/FI", "IMAGENAME eq ScreenRecorder.exe"],
+            ["tasklist", "/FI", "IMAGENAME eq ffmpeg.exe"],
+            ["where", "ffmpeg"],
+            ["cmd", "/c", f'dir /a "{data_dir}"'],
+            ["cmd", "/c", f'dir /a "{rec_dir}"'],
+            [
+                "reg", "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v", "ScreenRecordAgent",
+            ],
+        )
+    else:
+        commands = (
+            ["sw_vers"],
+            ["uname", "-a"],
+            ["id"],
+            ["scutil", "--get", "ComputerName"],
+            ["df", "-h", str(Path.home())],
+            ["ps", "axww", "-o", "pid,ppid,user,stat,command"],
+            ["pkgutil", "--pkg-info", "ai.bam.screenrecord.pkg"],
+        )
+    for cmd in commands:
         lines.append("")
         lines.append("$ " + " ".join(cmd))
         lines.append(_run(cmd))
@@ -399,6 +420,23 @@ def _launchd_snapshot() -> str:
 
 
 def _app_bundle_snapshot() -> str:
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        exe = Path(local_appdata) / "ScreenRecorder" / "ScreenRecorder.exe"
+        lines = [
+            f"created_at={_now_iso()}",
+            f"exe={exe}",
+            f"exe_exists={exe.exists()}",
+        ]
+        for cmd in (
+            ["cmd", "/c", f'dir /a "{exe.parent}"'],
+            ["powershell", "-NoProfile", "-Command", f'Get-Item "{exe}" | Format-List *'],
+        ):
+            lines.append("")
+            lines.append("$ " + " ".join(cmd))
+            lines.append(_run(cmd, timeout=8))
+        return "\n".join(lines) + "\n"
+
     app = Path("/Applications/ScreenRecorder.app")
     executable = app / "Contents" / "MacOS" / "ScreenRecorder"
     lines = [f"created_at={_now_iso()}", f"app_exists={app.exists()}"]
@@ -416,6 +454,15 @@ def _app_bundle_snapshot() -> str:
 
 
 def _system_log_snapshot() -> str:
+    if sys.platform == "win32":
+        return _run(
+            [
+                "wevtutil", "qe", "Application",
+                "/c:80", "/rd:true", "/f:text",
+                "/q:*[System[TimeCreated[timediff(@SystemTime) <= 1800000]]]",
+            ],
+            timeout=12,
+        )
     if sys.platform != "darwin":
         return "system log snapshot unavailable off macOS\n"
     predicate = (
@@ -573,6 +620,26 @@ def _detect_computer_name() -> str:
             if value and not value.startswith("ERROR:") and not value.startswith("(exit"):
                 return value
     return socket.gethostname().split(".")[0]
+
+
+def _current_user() -> str:
+    return (
+        os.environ.get("USER")
+        or os.environ.get("LOGNAME")
+        or os.environ.get("USERNAME")
+        or ""
+    )
+
+
+def _easy_copy_dirs() -> list:
+    dirs = [Path.home() / "Desktop", Path.home() / "Downloads"]
+    if sys.platform == "win32":
+        public = os.environ.get("PUBLIC")
+        if public:
+            dirs.insert(0, Path(public) / "Documents")
+    else:
+        dirs.insert(0, Path("/Users/Shared"))
+    return dirs
 
 
 def _recent_attempt(marker: Path, reason: str, min_interval_seconds: int) -> bool:

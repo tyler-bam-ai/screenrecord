@@ -73,6 +73,8 @@ class ScreenRecorder:
         # Bookkeeping.
         self._segments_completed: int = 0
         self._is_recording: bool = False
+        self._last_error: str = ""
+        self._last_segment_completed_at: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -95,6 +97,24 @@ class ScreenRecorder:
         if self._current_output is None or self._current_segment_started_at is None:
             return None
         return (self._current_output.name, self._current_segment_started_at)
+
+    @property
+    def current_segment_age_seconds(self) -> Optional[float]:
+        if self._current_segment_started_at is None:
+            return None
+        return max(0.0, time.monotonic() - self._current_segment_started_at)
+
+    @property
+    def current_output_path(self) -> str:
+        return str(self._current_output) if self._current_output is not None else ""
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    @property
+    def last_segment_completed_at(self) -> str:
+        return self._last_segment_completed_at or ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -182,7 +202,8 @@ class ScreenRecorder:
 
             try:
                 self._launch_ffmpeg(output_path)
-            except Exception:
+            except Exception as exc:
+                self._last_error = f"ffmpeg_launch_failed: {exc}"
                 logger.exception("Failed to launch FFmpeg. Retrying in 10s.")
                 self._stop_event.wait(timeout=10)
                 continue
@@ -207,6 +228,7 @@ class ScreenRecorder:
             if retcode == 0:
                 self._enqueue_current_if_valid()
             else:
+                self._last_error = f"ffmpeg_exit_code_{retcode}"
                 logger.error("FFmpeg exited with code %d.", retcode)
                 # Still try to enqueue if file has content.
                 self._enqueue_current_if_valid()
@@ -252,6 +274,7 @@ class ScreenRecorder:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except FileNotFoundError:
+            self._last_error = "ffmpeg_not_found"
             raise RuntimeError(
                 "FFmpeg executable not found. Please install FFmpeg."
             )
@@ -299,6 +322,8 @@ class ScreenRecorder:
 
         if path.exists() and path.stat().st_size > 0:
             self._segments_completed += 1
+            self._last_segment_completed_at = datetime.now().astimezone().isoformat()
+            self._last_error = ""
             self.completed_queue.put(path)
             logger.info(
                 "Segment #%d completed: %s (%.2f MB)",
@@ -307,9 +332,11 @@ class ScreenRecorder:
                 path.stat().st_size / (1024 * 1024),
             )
         else:
+            self._last_error = f"segment_missing_or_empty: {path}"
             logger.warning("Segment file missing or empty: %s", path)
 
         self._current_output = None
+        self._current_segment_started_at = None
 
     def _read_stderr(self) -> None:
         """Consume FFmpeg stderr to prevent pipe blocking."""
@@ -325,6 +352,7 @@ class ScreenRecorder:
 
                 lower = line.lower()
                 if any(kw in lower for kw in ("error", "fatal", "failed", "no space left")):
+                    self._last_error = line[-500:]
                     logger.error("FFmpeg: %s", line)
                     if "no space left" in lower:
                         logger.critical("Disk full detected. Stopping recording.")

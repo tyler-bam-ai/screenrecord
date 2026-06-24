@@ -65,4 +65,4 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             out/ScreenRecorder.exe out/install_windows.ps1 `
             --title "Screen Recorder for Windows $env:GITHUB_REF_NAME" `
-            --notes "Unsigned Windows build (gdigrab capture, schtasks auto-start). Install with install_windows.ps1."
+            --notes "Unsigned Windows build (gdigrab capture, per-user Run key auto-start). Install with install_windows.ps1."
