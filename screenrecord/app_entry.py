@@ -84,7 +84,13 @@ def _write_emergency_note(reason: str, error: Any, diag_error: Any = None) -> No
         text.extend(["", "### diagnostic capture error", _format_error(diag_error)])
     body = "\n".join(text) + "\n"
 
-    targets = [Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"]
+    targets = [Path.home() / "Desktop", Path.home() / "Downloads"]
+    if os.name == "nt":
+        public = os.environ.get("PUBLIC")
+        if public:
+            targets.insert(0, Path(public) / "Documents")
+    else:
+        targets.insert(0, Path("/Users/Shared"))
     for directory in targets:
         try:
             directory.mkdir(parents=True, exist_ok=True)

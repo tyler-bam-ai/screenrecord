@@ -81,7 +81,12 @@ def _mac_scutil_value(key: str) -> str:
 
 
 def _detected_employee() -> str:
-    employee = os.environ.get("USER") or os.environ.get("LOGNAME") or "User"
+    employee = (
+        os.environ.get("USER")
+        or os.environ.get("LOGNAME")
+        or os.environ.get("USERNAME")
+        or "User"
+    )
     try:
         import pwd
         full = pwd.getpwnam(employee).pw_gecos.split(",")[0].strip()

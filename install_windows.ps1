@@ -1,56 +1,126 @@
 # ============================================================================
 # Screen Recorder - Windows installer
 #
-# Installs the ScreenRecorder.exe background agent for the current user:
-#   - provisions %USERPROFILE%\.screenrecord (config, credentials, encryption key)
-#   - registers a Scheduled Task that starts the agent at every logon
-#   - starts it immediately
+# Installs the ScreenRecorder.exe background agent for one Windows user:
+#   - provisions <user profile>\.screenrecord when bootstrap.sh is reachable
+#   - installs the exe to <user profile>\AppData\Local\ScreenRecorder
+#   - registers that user's Run key for logon auto-start
+#   - starts immediately only when running in that same user's context
 #
-# Deployment values (Drive credentials, encryption key, sheet id, client name)
-# are read from bootstrap.sh in the repo, so there is a single source of truth
-# shared with the macOS installer.
-#
-# Usage (run in PowerShell, no admin required):
-#   ScreenRecorder.exe and this script should sit in the same folder.
-#   powershell -ExecutionPolicy Bypass -File install_windows.ps1
+# MDM note:
+#   If this script runs as NT AUTHORITY\SYSTEM, it resolves the logged-on user
+#   and writes that user's profile + HKU Run key instead of SYSTEM's profile.
+#   If no user is logged in, pass -TargetUser "DOMAIN\User" or run in user
+#   context. The latest exe also contains baked provisioning values and can
+#   self-repair config on first user launch.
 # ============================================================================
 param(
-    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/win-v1.0.4/ScreenRecorder.exe",
-    [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh"
+    [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/ScreenRecorder.exe",
+    [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh",
+    [string]$TargetUser = ""
 )
+
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Info($m) { Write-Host "[*] $m" }
 function Ok($m)   { Write-Host "[+] $m" -ForegroundColor Green }
 
-# --- 1. Read baked deployment values from bootstrap.sh -----------------------
-Info "Fetching deployment configuration..."
-$boot = (Invoke-WebRequest -UseBasicParsing -Uri $BootstrapUrl).Content
+function Test-RunningAsSystem {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return $identity.User.Value -eq "S-1-5-18"
+}
 
-function Get-Baked($name) {
+function Resolve-InstallUser {
+    $name = $TargetUser
+    if (-not $name) {
+        if (Test-RunningAsSystem) {
+            $cs = Get-CimInstance Win32_ComputerSystem
+            $name = $cs.UserName
+            if (-not $name) {
+                throw "No logged-on target user detected. Run the script in user context or pass -TargetUser 'DOMAIN\User'."
+            }
+        } else {
+            $name = "$env:USERDOMAIN\$env:USERNAME"
+        }
+    }
+
+    $account = New-Object System.Security.Principal.NTAccount($name)
+    $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+    $profile = (Get-ItemProperty -Path $profileKey -ErrorAction Stop).ProfileImagePath
+    $profile = [Environment]::ExpandEnvironmentVariables($profile)
+    if (-not (Test-Path $profile)) {
+        throw "Resolved profile path does not exist for ${name}: $profile"
+    }
+
+    [pscustomobject]@{
+        Name = $name
+        Sam = (($name -split "\\")[-1])
+        Sid = $sid
+        Profile = $profile
+    }
+}
+
+function Get-Baked($boot, $name) {
     if ($boot -match "(?m)^$name=`"([^`"]*)`"") { return $Matches[1] }
     throw "Could not find $name in bootstrap.sh"
 }
-$credsB64  = Get-Baked "GDRIVE_CREDENTIALS_B64"
-$keyB64    = Get-Baked "ENCRYPTION_KEY_B64"
-$folderId  = Get-Baked "GDRIVE_FOLDER_ID"
-$sheetId   = Get-Baked "GSHEET_ID"
-$client    = Get-Baked "CLIENT_NAME"
 
-# --- 2. Provision the data directory -----------------------------------------
-$dataDir = Join-Path $env:USERPROFILE ".screenrecord"
-$recDir  = Join-Path $dataDir "recordings"
+function Ensure-UserHiveLoaded($target) {
+    $sidPath = "Registry::HKEY_USERS\$($target.Sid)"
+    if (Test-Path $sidPath) {
+        return $false
+    }
+
+    $ntUser = Join-Path $target.Profile "NTUSER.DAT"
+    if (-not (Test-Path $ntUser)) {
+        throw "Cannot load user hive; missing $ntUser"
+    }
+    Info "Loading registry hive for $($target.Name)"
+    & reg.exe load "HKU\$($target.Sid)" "$ntUser" | Out-Null
+    return $true
+}
+
+function Unload-UserHiveIfNeeded($target, [bool]$loadedByUs) {
+    if ($loadedByUs) {
+        [gc]::Collect()
+        Start-Sleep -Milliseconds 250
+        & reg.exe unload "HKU\$($target.Sid)" | Out-Null
+    }
+}
+
+$target = Resolve-InstallUser
+Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
+
+# --- 1. Fetch deployment values if possible ----------------------------------
+$boot = $null
+try {
+    Info "Fetching deployment configuration..."
+    $boot = (Invoke-WebRequest -UseBasicParsing -Uri $BootstrapUrl).Content
+} catch {
+    Info "Could not fetch bootstrap.sh; latest exe will self-provision from baked values on first launch."
+}
+
+# --- 2. Provision the target user's data directory ---------------------------
+$dataDir = Join-Path $target.Profile ".screenrecord"
+$recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
 
-[IO.File]::WriteAllBytes((Join-Path $dataDir "credentials.json"), [Convert]::FromBase64String($credsB64))
-[IO.File]::WriteAllBytes((Join-Path $dataDir "encryption.key"),  [Convert]::FromBase64String($keyB64))
+if ($boot) {
+    $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
+    $keyB64   = Get-Baked $boot "ENCRYPTION_KEY_B64"
+    $folderId = Get-Baked $boot "GDRIVE_FOLDER_ID"
+    $sheetId  = Get-Baked $boot "GSHEET_ID"
+    $client   = Get-Baked $boot "CLIENT_NAME"
 
-$employee = $env:USERNAME
-$computer = $env:COMPUTERNAME
-# YAML wants forward slashes for paths.
-$dataY = $dataDir -replace '\\','/'
-$config = @"
+    [IO.File]::WriteAllBytes((Join-Path $dataDir "credentials.json"), [Convert]::FromBase64String($credsB64))
+    [IO.File]::WriteAllBytes((Join-Path $dataDir "encryption.key"),  [Convert]::FromBase64String($keyB64))
+
+    $employee = $target.Sam
+    $computer = $env:COMPUTERNAME
+    $dataY = $dataDir -replace '\\','/'
+    $config = @"
 client_name: "$client"
 employee_name: "$employee"
 computer_name: "$computer"
@@ -72,22 +142,28 @@ encryption:
 analysis:
   enabled: false
 
+input_monitor:
+  enabled: false
+  capture_keystroke_text: true
+  screenshot_min_interval: 0.0
+
 google_sheets:
   sheet_id: "$sheetId"
 
 rag:
   enabled: false
 "@
-Set-Content -Path (Join-Path $dataDir "config.yaml") -Value $config -Encoding UTF8
-Ok "Provisioned $dataDir ($employee / $computer / $client)"
+    Set-Content -Path (Join-Path $dataDir "config.yaml") -Value $config -Encoding UTF8
+    Ok "Provisioned $dataDir ($employee / $computer / $client)"
+} else {
+    Ok "Created $dataDir; config will be written by the exe self-provisioner."
+}
 
-# --- 3. Install the executable -----------------------------------------------
-$installDir = Join-Path $env:LOCALAPPDATA "ScreenRecorder"
+# --- 3. Install the executable ------------------------------------------------
+$installDir = Join-Path (Join-Path $target.Profile "AppData\Local") "ScreenRecorder"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $exeDest = Join-Path $installDir "ScreenRecorder.exe"
 
-# Stop any running instance first, or the exe file is locked and the copy below
-# fails (this is an upgrade/reinstall, not just a fresh install).
 Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
@@ -101,17 +177,27 @@ if (Test-Path $localExe) {
 }
 Ok "Installed $exeDest"
 
-# --- 4. Auto-start at logon (per-user Run key, no admin needed) --------------
-# A Scheduled Task via Register-ScheduledTask needs elevation (Access denied for
-# a standard user), and schtasks.exe writes to stderr when deleting a missing
-# task (trips ErrorActionPreference=Stop). The per-user Run key under HKCU is
-# always writable by the current user and starts the agent at every logon.
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Set-ItemProperty -Path $runKey -Name "ScreenRecordAgent" -Value "`"$exeDest`""
-Ok "Auto-start registered (per-user logon Run entry)"
+# --- 4. Auto-start for the target user ---------------------------------------
+$hiveLoadedByUs = $false
+try {
+    $hiveLoadedByUs = Ensure-UserHiveLoaded $target
+    $runKey = "Registry::HKEY_USERS\$($target.Sid)\Software\Microsoft\Windows\CurrentVersion\Run"
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -Path $runKey -Name "ScreenRecordAgent" -Value "`"$exeDest`""
+    Ok "Auto-start registered for $($target.Name)"
+} finally {
+    Unload-UserHiveIfNeeded $target $hiveLoadedByUs
+}
 
-# --- 5. Start it now ---------------------------------------------------------
-Start-Process -FilePath $exeDest
-Ok "Screen Recorder is running. It will appear on the dashboard within ~1 minute."
+# --- 5. Start now if safe -----------------------------------------------------
+$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if (-not (Test-RunningAsSystem) -and $currentSid -eq $target.Sid) {
+    Start-Process -FilePath $exeDest
+    Ok "Screen Recorder is running. It will appear on the dashboard within ~1 minute."
+} else {
+    Ok "Installed for $($target.Name). It will start at that user's next logon."
+}
+
 Write-Host ""
-Write-Host "To uninstall: Remove-ItemProperty '$runKey' ScreenRecordAgent; Stop-Process -Name ScreenRecorder -Force; Remove-Item -Recurse -Force '$installDir','$dataDir'"
+Write-Host "Static exe: $ExeUrl"
+Write-Host "Uninstall for this user: remove HKU\\$($target.Sid)\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ScreenRecordAgent, stop ScreenRecorder, then delete '$installDir' and '$dataDir'."

@@ -33,6 +33,11 @@ hiddenimports += [
 _ffmpeg = os.path.join(os.path.dirname(os.path.abspath(SPEC)), "ffmpeg.exe")
 binaries += [(_ffmpeg, ".")]
 
+# Bake deployment values so the frozen exe can self-provision/repair
+# %USERPROFILE%\\.screenrecord even when an MDM installer script did not run in
+# the target user's context.
+datas += [("_provision.json", ".")]
+
 a = Analysis(
     ["../screenrecord/app_entry.py"],
     pathex=[".."],

@@ -39,6 +39,25 @@ jobs:
           Copy-Item $exe.FullName build_app/ffmpeg.exe -Force
           Write-Host "ffmpeg.exe staged ($([math]::Round((Get-Item build_app/ffmpeg.exe).Length/1MB,1)) MB)"
 
+      - name: Bake provisioning values
+        shell: pwsh
+        run: |
+          $boot = Get-Content bootstrap.sh -Raw
+          function Get-Baked($name) {
+            $m = [regex]::Match($boot, "(?m)^$name=`"([^`"]*)`"")
+            if (-not $m.Success) { throw "Could not find $name in bootstrap.sh" }
+            return $m.Groups[1].Value
+          }
+          $payload = [ordered]@{
+            gcreds_b64 = Get-Baked "GDRIVE_CREDENTIALS_B64"
+            enckey_b64 = Get-Baked "ENCRYPTION_KEY_B64"
+            folder     = Get-Baked "GDRIVE_FOLDER_ID"
+            sheet      = Get-Baked "GSHEET_ID"
+            client     = Get-Baked "CLIENT_NAME"
+          } | ConvertTo-Json -Compress
+          Set-Content -Path build_app/_provision.json -Value $payload -Encoding UTF8
+          if (-not (Test-Path build_app/_provision.json)) { throw "Failed to write build_app/_provision.json" }
+
       - name: Build ScreenRecorder.exe
         run: pyinstaller --noconfirm --distpath dist_win --workpath build_win build_app/screenrecorder_win.spec
 
