@@ -132,8 +132,12 @@ def _write_baked_files(dir_: Path, vals: dict) -> None:
             except OSError:
                 pass
     credentials.write_bytes(base64.b64decode(vals["gcreds_b64"]))
-    if not key.exists() or not _valid_key_file(key):
-        key.write_bytes(base64.b64decode(vals["enckey_b64"]))
+    if vals.get("enckey_b64"):
+        key_bytes = base64.b64decode(vals["enckey_b64"])
+        if len(key_bytes) == 32:
+            key.write_bytes(key_bytes)
+        elif not key.exists() or not _valid_key_file(key):
+            raise RuntimeError("Baked encryption key is not a 32-byte key.")
     try:
         os.chmod(credentials, 0o400)
         os.chmod(key, 0o400)

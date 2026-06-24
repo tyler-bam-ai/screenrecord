@@ -334,6 +334,9 @@ class ScreenRecordService:
             self.uploader = self._init_uploader()
             if self.uploader is None:
                 logger.error("Recording blocked: uploader unavailable.")
+                self._recording_blocked_reason = "upload_unavailable"
+                self._update_machine_status_once()
+                self._upload_diagnostics_once("blocked-upload_unavailable")
                 return False
 
         from . import platform_utils

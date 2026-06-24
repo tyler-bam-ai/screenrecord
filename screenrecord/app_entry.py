@@ -8,6 +8,7 @@ the config to ``~/.screenrecord/config.yaml``.
 
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,40 @@ def _record_early_failure(reason: str, error: Any) -> None:
         record_early_failure(reason, error)
     except Exception as diag_exc:
         _write_early_log(f"diagnostic capture failed: {diag_exc!r}")
+        _write_emergency_note(reason, error, diag_exc)
+
+
+def _write_emergency_note(reason: str, error: Any, diag_error: Any = None) -> None:
+    text = [
+        "ScreenRecorder emergency startup diagnostic",
+        f"reason={reason}",
+        f"python={sys.version}",
+        f"executable={sys.executable}",
+        f"cwd={os.getcwd()}",
+        f"home={Path.home()}",
+        "",
+        "### startup error",
+        _format_error(error),
+    ]
+    if diag_error is not None:
+        text.extend(["", "### diagnostic capture error", _format_error(diag_error)])
+    body = "\n".join(text) + "\n"
+
+    targets = [Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"]
+    for directory in targets:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / "ScreenRecorder_emergency_startup_diagnostic.txt"
+            target.write_text(body, encoding="utf-8")
+            target.chmod(0o644)
+        except Exception:
+            pass
+
+
+def _format_error(error: Any) -> str:
+    if isinstance(error, BaseException):
+        return "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    return repr(error)
 
 
 def _run() -> None:

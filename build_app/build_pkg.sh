@@ -24,9 +24,12 @@ CLIENT=$(val CLIENT_NAME)
 
 # Assemble the payload.
 rm -rf pkgroot scripts
-mkdir -p pkgroot/Applications pkgroot/Library/LaunchAgents scripts
+mkdir -p pkgroot/Applications pkgroot/Library/LaunchAgents \
+    "pkgroot/Library/Application Support/ScreenRecorder" scripts
 cp -R "$APP" pkgroot/Applications/
 cp ai.bam.screenrecord.plist pkgroot/Library/LaunchAgents/
+cp launch_wrapper.sh "pkgroot/Library/Application Support/ScreenRecorder/launch_screenrecorder.sh"
+chmod 755 "pkgroot/Library/Application Support/ScreenRecorder/launch_screenrecorder.sh"
 
 # Generate postinstall from the template (| delimiter is safe: not in base64).
 sed -e "s|__GCREDS__|$GCREDS|" -e "s|__ENCKEY__|$ENCKEY|" \
@@ -36,7 +39,7 @@ chmod +x scripts/postinstall
 
 # Build the component pkg, then wrap as a signed distribution pkg (MDM needs it).
 pkgbuild --root pkgroot --scripts scripts \
-    --identifier ai.bam.screenrecord.pkg --version 1.4.5 \
+    --identifier ai.bam.screenrecord.pkg --version 1.4.6 \
     --install-location / dist/.component.pkg >/dev/null
 
 INSTALLER_ID=$(security find-identity -v 2>/dev/null \

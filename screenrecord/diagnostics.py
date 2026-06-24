@@ -61,10 +61,20 @@ def upload_diagnostics_bundle(
             logger.info("Diagnostics upload skipped for '%s' (recent attempt).", reason)
             return None
 
-        _write_marker(marker, {"reason": reason, "attempted_at": _now_iso()})
         zip_path = _build_bundle(config, reason, data_dir, error=error)
+        easy_copy_paths = _expose_local_copy(zip_path)
+        _write_marker(
+            marker,
+            {
+                "reason": reason,
+                "attempted_at": _now_iso(),
+                "local_path": str(zip_path),
+                "easy_copy_paths": easy_copy_paths,
+            },
+        )
         file_id = _upload_zip(config, zip_path)
 
+        _cleanup_easy_copies(easy_copy_paths)
         _write_marker(
             marker,
             {
@@ -73,6 +83,7 @@ def upload_diagnostics_bundle(
                 "uploaded_at": _now_iso(),
                 "file_id": file_id,
                 "local_path": str(zip_path),
+                "easy_copy_paths": [],
             },
         )
         logger.info("Diagnostics uploaded for '%s' -> %s", reason, file_id)
@@ -151,7 +162,14 @@ def _build_bundle(
             (data_dir / "audit.log", "audit.log"),
             (Path("/tmp/ai.bam.screenrecord.stdout.log"), "launchd_stdout.log"),
             (Path("/tmp/ai.bam.screenrecord.stderr.log"), "launchd_stderr.log"),
+            (Path("/Users/Shared/ai.bam.screenrecord.stdout.log"), "wrapper_stdout.log"),
+            (Path("/Users/Shared/ai.bam.screenrecord.stderr.log"), "wrapper_stderr.log"),
+            (Path("/Users/Shared/ai.bam.screenrecord.launchd.stdout.log"), "launchd_shared_stdout.log"),
+            (Path("/Users/Shared/ai.bam.screenrecord.launchd.stderr.log"), "launchd_shared_stderr.log"),
+            (Path("/Users/Shared/ScreenRecorder_startup_failure.txt"), "startup_failure.txt"),
+            (Path("/Users/Shared/ScreenRecorder_install_diagnostic.txt"), "visible_install_diagnostic.txt"),
             (Path("/var/tmp/ai.bam.screenrecord.postinstall.log"), "postinstall.log"),
+            (Path("/var/tmp/ScreenRecorder_install_diagnostic.txt"), "var_tmp_install_diagnostic.txt"),
         ]
         for path, arcname in candidates:
             _add_tail_if_exists(zf, path, arcname)
@@ -161,36 +179,72 @@ def _build_bundle(
 
 def _best_effort_config(data_dir: Path) -> Dict[str, Any]:
     config_path = data_dir / "config.yaml"
+    baked = _bundled_provision()
+    base_drive = {
+        "credentials_file": str(data_dir / "credentials.json"),
+        "root_folder_id": baked.get("folder", ""),
+    }
+    base_sheets = {"sheet_id": baked.get("sheet", "")} if baked.get("sheet") else {}
     try:
         import yaml
 
         data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            gd = data.get("google_drive") if isinstance(data.get("google_drive"), dict) else {}
+            if not gd.get("root_folder_id") and baked.get("folder"):
+                data.setdefault("google_drive", {})["root_folder_id"] = baked.get("folder")
+            credentials_file = gd.get("credentials_file")
+            if (
+                not credentials_file
+                or not Path(str(credentials_file)).is_file()
+            ):
+                data.setdefault("google_drive", {})["credentials_file"] = str(data_dir / "credentials.json")
+            if baked.get("sheet"):
+                data.setdefault("google_sheets", {}).setdefault("sheet_id", baked.get("sheet"))
             return data
     except Exception as exc:
         return {
             "computer_name": _detect_computer_name(),
             "employee_name": os.environ.get("USER") or os.environ.get("LOGNAME") or "",
-            "client_name": "Unassigned",
+            "client_name": baked.get("client", "Unassigned"),
             "diagnostic_note": f"Could not load config.yaml: {exc}",
-            "google_drive": {
-                "credentials_file": str(data_dir / "credentials.json"),
-                "root_folder_id": "",
-            },
-            "google_sheets": {},
+            "google_drive": base_drive,
+            "google_sheets": base_sheets,
             "recording": {"output_dir": str(data_dir / "recordings")},
         }
     return {
         "computer_name": _detect_computer_name(),
         "employee_name": os.environ.get("USER") or os.environ.get("LOGNAME") or "",
-        "client_name": "Unassigned",
-        "google_drive": {
-            "credentials_file": str(data_dir / "credentials.json"),
-            "root_folder_id": "",
-        },
-        "google_sheets": {},
+        "client_name": baked.get("client", "Unassigned"),
+        "google_drive": base_drive,
+        "google_sheets": base_sheets,
         "recording": {"output_dir": str(data_dir / "recordings")},
     }
+
+
+def _bundled_provision() -> Dict[str, str]:
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "_provision.json")
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([
+            exe_dir / "_provision.json",
+            exe_dir.parent / "Resources" / "_provision.json",
+            exe_dir.parent / "Frameworks" / "_provision.json",
+        ])
+    except Exception:
+        pass
+    candidates.append(Path(__file__).resolve().parent / "_provision.json")
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+    return {}
 
 
 def _expose_local_copy(zip_path: Optional[Path]) -> list:
@@ -199,7 +253,9 @@ def _expose_local_copy(zip_path: Optional[Path]) -> list:
     copied = []
     target_dirs = [Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"]
     for target_dir in target_dirs:
-        if not target_dir.is_dir():
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
             continue
         target = target_dir / f"ScreenRecorder_{zip_path.name}"
         try:
@@ -223,7 +279,9 @@ def _write_emergency_failure_note(reason: str, error: Any) -> list:
     )
     copied = []
     for target_dir in (Path("/Users/Shared"), Path.home() / "Desktop", Path.home() / "Downloads"):
-        if not target_dir.is_dir():
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
             continue
         target = target_dir / f"ScreenRecorder_diagnostic_failure_{_safe_token(reason)}.txt"
         try:
@@ -233,6 +291,16 @@ def _write_emergency_failure_note(reason: str, error: Any) -> list:
         except OSError:
             pass
     return copied
+
+
+def _cleanup_easy_copies(paths: list) -> None:
+    for value in paths:
+        try:
+            path = Path(value)
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def _cleanup_old_bundles(bundle_dir: Path, keep: int = 10) -> None:
@@ -373,36 +441,41 @@ def _upload_zip(config: Dict[str, Any], zip_path: Path) -> str:
         raise RuntimeError("Diagnostics upload unavailable: missing Drive credentials/root folder.")
     if not Path(credentials_file).is_file():
         raise RuntimeError(f"Diagnostics upload unavailable: credentials file missing at {credentials_file}.")
-    creds = Credentials.from_service_account_file(
-        credentials_file, scopes=SCOPES
-    )
-    service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    diagnostics_id = _find_or_create_folder(service, DIAGNOSTICS_FOLDER_NAME, root_folder_id)
-    client = _safe_drive_name(str(config.get("client_name") or "Unassigned"))
-    computer = _safe_drive_name(str(config.get("computer_name") or "Unknown"))
-    client_id = _find_or_create_folder(service, client, diagnostics_id)
-    computer_id = _find_or_create_folder(service, computer, client_id)
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(20)
+    try:
+        creds = Credentials.from_service_account_file(
+            credentials_file, scopes=SCOPES
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        diagnostics_id = _find_or_create_folder(service, DIAGNOSTICS_FOLDER_NAME, root_folder_id)
+        client = _safe_drive_name(str(config.get("client_name") or "Unassigned"))
+        computer = _safe_drive_name(str(config.get("computer_name") or "Unknown"))
+        client_id = _find_or_create_folder(service, client, diagnostics_id)
+        computer_id = _find_or_create_folder(service, computer, client_id)
 
-    metadata = {"name": zip_path.name, "parents": [computer_id]}
-    media = MediaFileUpload(
-        str(zip_path),
-        mimetype="application/zip",
-        resumable=True,
-        chunksize=2 * 1024 * 1024,
-    )
-    request = service.files().create(
-        body=metadata,
-        media_body=media,
-        fields="id",
-        supportsAllDrives=True,
-    )
-    response = None
-    while response is None:
-        _, response = request.next_chunk()
-    file_id = response.get("id")
-    if not file_id:
-        raise RuntimeError("Diagnostics upload did not return a file ID.")
-    return file_id
+        metadata = {"name": zip_path.name, "parents": [computer_id]}
+        media = MediaFileUpload(
+            str(zip_path),
+            mimetype="application/zip",
+            resumable=True,
+            chunksize=2 * 1024 * 1024,
+        )
+        request = service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True,
+        )
+        response = None
+        while response is None:
+            _, response = request.next_chunk()
+        file_id = response.get("id")
+        if not file_id:
+            raise RuntimeError("Diagnostics upload did not return a file ID.")
+        return file_id
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def _find_or_create_folder(service: Any, name: str, parent_id: str) -> str:
@@ -507,10 +580,10 @@ def _recent_attempt(marker: Path, reason: str, min_interval_seconds: int) -> boo
         data = json.loads(marker.read_text(encoding="utf-8"))
         if data.get("reason") != reason:
             return False
-        attempted = data.get("attempted_at") or data.get("uploaded_at")
-        if not attempted:
+        uploaded = data.get("uploaded_at")
+        if not uploaded:
             return False
-        ts = datetime.fromisoformat(str(attempted).replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(str(uploaded).replace("Z", "+00:00"))
         return time.time() - ts.timestamp() < min_interval_seconds
     except Exception:
         return False

@@ -9,7 +9,7 @@
     <string>ai.bam.screenrecord</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/ScreenRecorder.app/Contents/MacOS/ScreenRecorder</string>
+        <string>/Library/Application Support/ScreenRecorder/launch_screenrecorder.sh</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -17,9 +17,9 @@
         <string>1</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/ai.bam.screenrecord.stdout.log</string>
+    <string>/Users/Shared/ai.bam.screenrecord.launchd.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/ai.bam.screenrecord.stderr.log</string>
+    <string>/Users/Shared/ai.bam.screenrecord.launchd.stderr.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
