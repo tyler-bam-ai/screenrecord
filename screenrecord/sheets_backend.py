@@ -15,8 +15,9 @@ Commands   : timestamp | computer_name | command | status | executed_at
 """
 
 import logging
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -96,6 +97,34 @@ class SheetsBackend:
         except Exception:
             logger.exception("Failed to authenticate with Google APIs.")
             raise
+
+    def _execute_with_retry(
+        self,
+        build_request: Callable[[], Any],
+        action: str,
+        max_attempts: int = 5,
+    ) -> Any:
+        """Execute a Google API request with backoff for transient failures."""
+        retry_statuses = {429, 500, 502, 503, 504}
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return build_request().execute()
+            except HttpError as exc:
+                status = getattr(exc.resp, "status", None)
+                if status in retry_statuses and attempt < max_attempts:
+                    wait = min(60, 5 * (2 ** (attempt - 1)))
+                    logger.warning(
+                        "%s hit HTTP %s on attempt %d/%d; retrying in %ss.",
+                        action,
+                        status,
+                        attempt,
+                        max_attempts,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.exception("%s failed.", action)
+                raise
 
     # ------------------------------------------------------------------
     # Sheet ID property
@@ -411,13 +440,16 @@ class SheetsBackend:
         ]
 
         try:
-            self._sheets_service.spreadsheets().values().append(
-                spreadsheetId=self._sheet_id,
-                range=f"{TAB_RECORDINGS}!A:G",
-                valueInputOption="RAW",
-                insertDataOption="INSERT_ROWS",
-                body={"values": [row_data]},
-            ).execute()
+            self._execute_with_retry(
+                lambda: self._sheets_service.spreadsheets().values().append(
+                    spreadsheetId=self._sheet_id,
+                    range=f"{TAB_RECORDINGS}!A:G",
+                    valueInputOption="RAW",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": [row_data]},
+                ),
+                f"Log recording '{filename}' for '{computer_name}'",
+            )
             logger.debug(
                 "Logged recording '%s' for '%s'.", filename, computer_name
             )
