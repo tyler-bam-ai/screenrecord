@@ -1343,10 +1343,14 @@ function renderMachines(machines) {
     const rawStatus = status.toLowerCase();
     let statusClass = getStatusClass(minsAgo, rawStatus);
     let statusLabel = getStatusLabel(statusClass, rawStatus);
-    const staleUpload = statusClass === 'green' && stats.total === 0 && Number(uptime) > 1.5;
-    if (staleUpload || /^(missing|error)/i.test(permissions)) {
+    const permissionProblem = /^(missing|error)/i.test(permissions);
+    const screenPermissionProblem = permissionProblem && /screen recording/i.test(permissions);
+    const captureEvidence = Number(segments) > 0 || stats.lastMinutes <= 90;
+    const staleUpload = statusClass === 'green' && stats.total === 0 && Number(segments) === 0 && Number(uptime) > 1.5;
+    const blockingPermissionProblem = permissionProblem && !(screenPermissionProblem && captureEvidence);
+    if (staleUpload || blockingPermissionProblem) {
       statusClass = 'red';
-      statusLabel = staleUpload ? 'no uploads' : statusLabel;
+      statusLabel = staleUpload ? 'no uploads' : (screenPermissionProblem ? 'capture blocked' : 'error');
     }
 
     return {
@@ -1363,7 +1367,7 @@ function renderMachines(machines) {
       _statusLabel: statusLabel,
       _heartbeat: heartbeat,
       _permissions: permissions,
-      _permsOk: !/^(missing|error)/i.test(permissions),
+      _permsOk: !permissionProblem || (screenPermissionProblem && captureEvidence),
       _staleUpload: staleUpload
     };
   });

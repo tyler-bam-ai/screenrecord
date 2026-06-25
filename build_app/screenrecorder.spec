@@ -67,7 +67,7 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ScreenRecorder",
         "CFBundleDisplayName": "Screen Recorder",
-        "CFBundleShortVersionString": "1.4.6",
+        "CFBundleShortVersionString": "1.4.7",
         "CFBundleVersion": "12",
         "LSUIElement": True,          # background agent, no Dock icon
         "LSBackgroundOnly": False,    # still needs a UI session for the TCC prompt

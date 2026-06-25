@@ -54,6 +54,7 @@ class ScreenRecordService:
         self._last_upload_at: Optional[str] = None
         self._last_upload_error: str = ""
         self._consecutive_upload_failures: int = 0
+        self._screen_capture_verified: bool = False
         self._last_health_diagnostic_at: Dict[str, float] = {}
         self._stopping_lock = threading.Lock()
         self._shutdown_complete = threading.Event()
@@ -310,6 +311,7 @@ class ScreenRecordService:
         self._last_upload_at = datetime.now(timezone.utc).isoformat()
         self._last_upload_error = ""
         self._consecutive_upload_failures = 0
+        self._screen_capture_verified = True
 
     def _record_upload_failure(self, reason: str) -> None:
         self._last_upload_error = str(reason)[-500:]
@@ -445,9 +447,16 @@ class ScreenRecordService:
     def _permission_status(self) -> str:
         try:
             from . import macos_permissions
-            return macos_permissions.check_all()
+            status = macos_permissions.check_all()
         except Exception:
             return "ok"
+        if (
+            self._screen_capture_verified
+            and status.lower().startswith("missing:")
+            and "screen recording" in status.lower()
+        ):
+            return "ok"
+        return status
 
     def _dashboard_status(self) -> str:
         if self._is_paused():
@@ -516,6 +525,7 @@ class ScreenRecordService:
             self._update_machine_status_once()
             self._upload_diagnostics_once("blocked-needs_screen_recording_permission")
             return False
+        self._screen_capture_verified = True
 
         try:
             from .recorder import ScreenRecorder

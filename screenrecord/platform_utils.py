@@ -303,8 +303,8 @@ def _build_macos_command(
     # Duration limit — one segment per FFmpeg invocation.
     cmd += ["-t", str(segment_duration)]
 
-    # Downsample to target fps before encoding.
-    cmd += ["-vf", f"fps={fps}"]
+    # Downsample to target fps and force even dimensions for H.264/yuv420p.
+    cmd += ["-vf", f"fps={fps},scale=trunc(iw/2)*2:trunc(ih/2)*2"]
 
     # Video encoding.
     cmd += [
@@ -339,6 +339,11 @@ def _build_windows_command(
         cmd += ["-f", "dshow", "-i", f"audio={audio_device}"]
 
     cmd += ["-t", str(segment_duration)]
+
+    # Some Windows desktops report odd pixel dimensions. libx264 with yuv420p
+    # rejects those frames, causing empty segments. Crop to the nearest even
+    # size before encoding.
+    cmd += ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
 
     cmd += [
         "-c:v", "libx264",
