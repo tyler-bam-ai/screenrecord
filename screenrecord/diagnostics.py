@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from screenrecord import platform_utils
+
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -600,6 +602,7 @@ def _run(cmd: list, timeout: int = 3) -> str:
             text=True,
             timeout=timeout,
             check=False,
+            **platform_utils.hidden_subprocess_kwargs(),
         )
         output = (result.stdout or "") + (result.stderr or "")
         return output[-20000:] if output else f"(exit {result.returncode}, no output)"

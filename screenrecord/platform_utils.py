@@ -43,6 +43,26 @@ def is_windows() -> bool:
     return platform.system() == WINDOWS
 
 
+def hidden_subprocess_kwargs() -> Dict[str, Any]:
+    """Return Windows subprocess flags that suppress child console windows."""
+    if platform.system() != WINDOWS:
+        return {}
+
+    kwargs: Dict[str, Any] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 # ---------------------------------------------------------------------------
 # FFmpeg availability
 # ---------------------------------------------------------------------------
@@ -93,6 +113,7 @@ def check_screen_recording_permission() -> bool:
             capture_output=True,
             text=True,
             timeout=15,
+            **hidden_subprocess_kwargs(),
         )
 
         if result.returncode != 0:
@@ -141,6 +162,7 @@ def get_ffmpeg_version() -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=10,
+            **hidden_subprocess_kwargs(),
         )
         first_line = result.stdout.strip().split("\n")[0]
         logger.debug("FFmpeg version: %s", first_line)
@@ -167,7 +189,13 @@ def get_recording_devices() -> str:
         cmd = ["ffmpeg", "-f", "dshow", "-list_devices", "true", "-i", "dummy"]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            **hidden_subprocess_kwargs(),
+        )
         return result.stderr
     except subprocess.SubprocessError as exc:
         raise RuntimeError(f"Failed to enumerate recording devices: {exc}") from exc
@@ -191,6 +219,7 @@ def _detect_screen_device_index() -> str:
         result = subprocess.run(
             ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
             capture_output=True, text=True, timeout=10,
+            **hidden_subprocess_kwargs(),
         )
         in_video = False
         for line in result.stderr.splitlines():
@@ -433,7 +462,7 @@ def _install_autostart_windows(executable_path: str) -> str:
 
     subprocess.run(
         ["schtasks", "/Delete", "/TN", task_name, "/F"],
-        capture_output=True, timeout=15,
+        capture_output=True, timeout=15, **hidden_subprocess_kwargs(),
     )
 
     try:
@@ -447,6 +476,7 @@ def _install_autostart_windows(executable_path: str) -> str:
                 "/F",
             ],
             capture_output=True, text=True, check=True, timeout=15,
+            **hidden_subprocess_kwargs(),
         )
         logger.info("Scheduled task created: %s", result.stdout.strip())
     except subprocess.CalledProcessError as exc:

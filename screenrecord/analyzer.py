@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from screenrecord import platform_utils
+
 logger = logging.getLogger(__name__)
 
 
@@ -369,6 +371,7 @@ Be as specific and detailed as possible. Include EVERYTHING you can observe."""
                 capture_output=True,
                 text=True,
                 timeout=300,  # 5 minute timeout
+                **platform_utils.hidden_subprocess_kwargs(),
             )
             if result.returncode != 0:
                 logger.error(
