@@ -17,7 +17,9 @@
 param(
     [string]$ExeUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/ScreenRecorder.exe",
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh",
-    [string]$TargetUser = ""
+    [string]$TargetUser = "",
+    [string]$BootstrapFile = "",
+    [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +69,79 @@ function Get-Baked($boot, $name) {
     throw "Could not find $name in bootstrap.sh"
 }
 
+function Invoke-BestEffort($label, [scriptblock]$action) {
+    try {
+        & $action
+    } catch {
+        Info "$label failed: $($_.Exception.Message)"
+    }
+}
+
+function Repair-TargetPathAccess($path, $target) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        return
+    }
+
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (-not $item) {
+        return
+    }
+
+    Invoke-BestEffort "Clearing file attributes on $path" {
+        & attrib.exe -R -S -H $path /S /D 2>$null | Out-Null
+    }
+
+    if ($item.PSIsContainer) {
+        Invoke-BestEffort "Taking ownership of $path" {
+            & takeown.exe /F $path /R /D Y 2>$null | Out-Null
+        }
+    } else {
+        Invoke-BestEffort "Taking ownership of $path" {
+            & takeown.exe /F $path 2>$null | Out-Null
+        }
+    }
+
+    $rights = if ($item.PSIsContainer) { "(OI)(CI)F" } else { "F" }
+    $grants = @(
+        "*$($target.Sid):$rights",
+        "*S-1-5-18:$rights",
+        "*S-1-5-32-544:$rights"
+    )
+
+    Invoke-BestEffort "Repairing ACL on $path" {
+        $args = @($path, "/inheritance:e", "/grant:r") + $grants
+        if ($item.PSIsContainer) {
+            $args += @("/T", "/C")
+        }
+        & icacls.exe @args 2>$null | Out-Null
+    }
+}
+
+function Write-ManagedBytes($path, [byte[]]$bytes, $target) {
+    $parent = Split-Path -Parent $path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Repair-TargetPathAccess $parent $target
+
+    if (Test-Path -LiteralPath $path) {
+        Repair-TargetPathAccess $path $target
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    }
+
+    $tmp = Join-Path $parent (".$([IO.Path]::GetFileName($path)).$([guid]::NewGuid()).tmp")
+    try {
+        [IO.File]::WriteAllBytes($tmp, $bytes)
+        Move-Item -LiteralPath $tmp -Destination $path -Force
+        Repair-TargetPathAccess $path $target
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-ManagedText($path, [string]$text, $target) {
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    Write-ManagedBytes $path ($utf8.GetBytes($text)) $target
+}
+
 function Ensure-UserHiveLoaded($target) {
     $sidPath = "Registry::HKEY_USERS\$($target.Sid)"
     if (Test-Path $sidPath) {
@@ -93,19 +168,30 @@ function Unload-UserHiveIfNeeded($target, [bool]$loadedByUs) {
 $target = Resolve-InstallUser
 Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
 
+# Stop the existing agent before touching provisioned files. Older builds can
+# leave credentials/config read-only or owned by another context.
+Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
 # --- 1. Fetch deployment values if possible ----------------------------------
 $boot = $null
-try {
-    Info "Fetching deployment configuration..."
-    $boot = (Invoke-WebRequest -UseBasicParsing -Uri $BootstrapUrl).Content
-} catch {
-    Info "Could not fetch bootstrap.sh; latest exe will self-provision from baked values on first launch."
+if ($BootstrapFile) {
+    Info "Reading deployment configuration from $BootstrapFile..."
+    $boot = Get-Content -LiteralPath $BootstrapFile -Raw
+} else {
+    try {
+        Info "Fetching deployment configuration..."
+        $boot = (Invoke-WebRequest -UseBasicParsing -Uri $BootstrapUrl).Content
+    } catch {
+        Info "Could not fetch bootstrap.sh; latest exe will self-provision from baked values on first launch."
+    }
 }
 
 # --- 2. Provision the target user's data directory ---------------------------
 $dataDir = Join-Path $target.Profile ".screenrecord"
 $recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
+Repair-TargetPathAccess $dataDir $target
 
 if ($boot) {
     $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
@@ -114,8 +200,8 @@ if ($boot) {
     $sheetId  = Get-Baked $boot "GSHEET_ID"
     $client   = Get-Baked $boot "CLIENT_NAME"
 
-    [IO.File]::WriteAllBytes((Join-Path $dataDir "credentials.json"), [Convert]::FromBase64String($credsB64))
-    [IO.File]::WriteAllBytes((Join-Path $dataDir "encryption.key"),  [Convert]::FromBase64String($keyB64))
+    Write-ManagedBytes (Join-Path $dataDir "credentials.json") ([Convert]::FromBase64String($credsB64)) $target
+    Write-ManagedBytes (Join-Path $dataDir "encryption.key")  ([Convert]::FromBase64String($keyB64)) $target
 
     $employee = $target.Sam
     $computer = $env:COMPUTERNAME
@@ -153,7 +239,7 @@ google_sheets:
 rag:
   enabled: false
 "@
-    Set-Content -Path (Join-Path $dataDir "config.yaml") -Value $config -Encoding UTF8
+    Write-ManagedText (Join-Path $dataDir "config.yaml") $config $target
     Ok "Provisioned $dataDir ($employee / $computer / $client)"
 } else {
     Ok "Created $dataDir; config will be written by the exe self-provisioner."
@@ -191,7 +277,9 @@ try {
 
 # --- 5. Start now if safe -----------------------------------------------------
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-if (-not (Test-RunningAsSystem) -and $currentSid -eq $target.Sid) {
+if ($NoStart) {
+    Ok "Installed for $($target.Name). Start skipped by -NoStart."
+} elseif (-not (Test-RunningAsSystem) -and $currentSid -eq $target.Sid) {
     Start-Process -FilePath $exeDest
     Ok "Screen Recorder is running. It will appear on the dashboard within ~1 minute."
 } else {

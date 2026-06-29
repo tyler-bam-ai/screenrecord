@@ -69,6 +69,41 @@ jobs:
           Copy-Item install_windows.ps1 out/ -Force
           Write-Host "ScreenRecorder.exe size: $([math]::Round((Get-Item out/ScreenRecorder.exe).Length/1MB,1)) MB"
 
+      - name: Self-test Windows installer repair path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dataDir = Join-Path $env:USERPROFILE ".screenrecord"
+          $installDir = Join-Path $env:LOCALAPPDATA "ScreenRecorder"
+          Remove-Item -Recurse -Force $dataDir, $installDir -ErrorAction SilentlyContinue
+
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          foreach ($name in @("credentials.json", "encryption.key", "config.yaml")) {
+            $path = Join-Path $dataDir $name
+            Set-Content -Path $path -Value "locked" -Encoding UTF8
+            & attrib.exe +R $path
+          }
+
+          $target = "$env:USERDOMAIN\$env:USERNAME"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File out/install_windows.ps1 `
+            -TargetUser $target `
+            -BootstrapFile bootstrap.sh `
+            -NoStart
+
+          foreach ($name in @("credentials.json", "encryption.key", "config.yaml")) {
+            $path = Join-Path $dataDir $name
+            if (-not (Test-Path $path)) { throw "Missing provisioned file: $path" }
+            if (((Get-Item $path -Force).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+              throw "Provisioned file is still read-only: $path"
+            }
+          }
+          if ((Get-Content (Join-Path $dataDir "credentials.json") -Raw).Trim() -eq "locked") {
+            throw "credentials.json was not overwritten"
+          }
+          if (-not (Test-Path (Join-Path $installDir "ScreenRecorder.exe"))) {
+            throw "ScreenRecorder.exe was not installed"
+          }
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
