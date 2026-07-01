@@ -4,6 +4,7 @@
 set -u
 
 LOG="/var/tmp/ai.bam.screenrecord.preinstall.log"
+PROCESS_PATTERN="ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord"
 exec >>"$LOG" 2>&1
 echo "==== ScreenRecorder preinstall $(date -u '+%Y-%m-%dT%H:%M:%SZ') ===="
 
@@ -16,8 +17,10 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" 
     fi
 fi
 
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if ! pgrep -f "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord" >/dev/null 2>&1; then
+pkill -TERM -f "$PROCESS_PATTERN" 2>/dev/null || true
+
+for attempt in $(seq 1 90); do
+    if ! pgrep -f "$PROCESS_PATTERN" >/dev/null 2>&1; then
         echo "Existing recorder processes stopped."
         exit 0
     fi
@@ -25,6 +28,12 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
 done
 
-pkill -f "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord" 2>/dev/null || true
+echo "Recorder processes still running after graceful wait; forcing stop."
+pkill -KILL -f "$PROCESS_PATTERN" 2>/dev/null || true
 sleep 2
+if pgrep -f "$PROCESS_PATTERN" >/dev/null 2>&1; then
+    echo "WARNING: recorder processes still detected after SIGKILL."
+else
+    echo "Recorder processes force-stopped."
+fi
 exit 0

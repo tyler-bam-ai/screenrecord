@@ -145,6 +145,7 @@ fi
 echo "User home: $USER_HOME"
 
 DIR="$USER_HOME/.screenrecord"
+PROCESS_PATTERN="ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord"
 mkdir -p "$DIR/recordings"
 
 # Remove older source-install LaunchAgents that used different labels/paths.
@@ -154,6 +155,16 @@ UID_N=$(id -u "$CONSOLE_USER")
 launchctl bootout "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
 launchctl bootout "gui/$UID_N/com.screenrecord.service" 2>/dev/null || true
 launchctl bootout "gui/$UID_N/com.screenrecord.agent" 2>/dev/null || true
+pkill -TERM -f "$PROCESS_PATTERN" 2>/dev/null || true
+for attempt in $(seq 1 30); do
+    if ! pgrep -f "$PROCESS_PATTERN" >/dev/null 2>&1; then
+        echo "No existing recorder processes before launch."
+        break
+    fi
+    echo "Waiting for existing recorder processes before launch (attempt $attempt)."
+    sleep 1
+done
+pkill -KILL -f "$PROCESS_PATTERN" 2>/dev/null || true
 rm -f "$USER_HOME/Library/LaunchAgents/ai.bam.screenrecord.plist"
 rm -f "$USER_HOME/Library/LaunchAgents/com.screenrecord.service.plist"
 rm -f "$USER_HOME/Library/LaunchAgents/com.screenrecord.agent.plist"

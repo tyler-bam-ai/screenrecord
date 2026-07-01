@@ -1,8 +1,8 @@
 """Version constants for packaged ScreenRecorder builds."""
 
-MAC_VERSION = "1.4.13"
-MAC_BUILD = "18"
-WINDOWS_VERSION = "1.0.15"
+MAC_VERSION = "1.4.14"
+MAC_BUILD = "19"
+WINDOWS_VERSION = "1.0.16"
 MAC_UPDATE_VERSION = f"{MAC_VERSION}.{MAC_BUILD}"
 
 

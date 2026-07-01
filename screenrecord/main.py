@@ -56,7 +56,8 @@ class ScreenRecordService:
         self._consecutive_upload_failures: int = 0
         self._screen_capture_verified: bool = False
         self._last_health_diagnostic_at: Dict[str, float] = {}
-        self._stopping_lock = threading.Lock()
+        self._stopping_lock = threading.RLock()
+        self._stop_started = threading.Event()
         self._shutdown_complete = threading.Event()
 
         # Pipeline thread
@@ -1158,6 +1159,11 @@ class ScreenRecordService:
         with self._stopping_lock:
             if self._shutdown_complete.is_set():
                 return
+            if self._stop_started.is_set():
+                logger.info("Stop already in progress; ignoring duplicate shutdown request.")
+                self.stop_event.set()
+                return
+            self._stop_started.set()
 
             logger.info("Stopping ScreenRecordService...")
 
