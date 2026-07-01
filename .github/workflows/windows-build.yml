@@ -64,6 +64,8 @@ jobs:
             sheet      = Get-Baked "GSHEET_ID"
             client     = Get-Baked "CLIENT_NAME"
             upload_folder = Get-BakedOptional "GDRIVE_UPLOAD_FOLDER_ID"
+            heartbeat_folder = Get-BakedOptional "GDRIVE_HEARTBEAT_FOLDER_ID"
+            diagnostics_folder = Get-BakedOptional "GDRIVE_DIAGNOSTICS_FOLDER_ID"
           } | ConvertTo-Json -Compress
           Set-Content -Path build_app/_provision.json -Value $payload -Encoding UTF8
           if (-not (Test-Path build_app/_provision.json)) { throw "Failed to write build_app/_provision.json" }

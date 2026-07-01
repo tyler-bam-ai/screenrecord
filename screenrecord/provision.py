@@ -37,6 +37,8 @@ google_drive:
   credentials_file: "{dir}/credentials.json"
   root_folder_id: "{folder}"
   upload_folder_id: "{upload_folder}"
+  heartbeat_folder_id: "{heartbeat_folder}"
+  diagnostics_folder_id: "{diagnostics_folder}"
 
 encryption:
   key_file: "{dir}/encryption.key"
@@ -58,6 +60,7 @@ updater:
 
 google_sheets:
   sheet_id: "{sheet}"
+  make_public: false
 
 rag:
   enabled: false
@@ -199,6 +202,8 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "credentials_file": str(dir_ / "credentials.json"),
             "root_folder_id": vals.get("folder", ""),
             "upload_folder_id": vals.get("upload_folder", ""),
+            "heartbeat_folder_id": vals.get("heartbeat_folder", ""),
+            "diagnostics_folder_id": vals.get("diagnostics_folder", ""),
         },
         "encryption": {
             "key_file": str(dir_ / "encryption.key"),
@@ -220,6 +225,7 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
         },
         "google_sheets": {
             "sheet_id": vals.get("sheet", ""),
+            "make_public": False,
         },
         "rag": {
             "enabled": False,
@@ -245,6 +251,10 @@ def _bundled_provision() -> dict:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if "upload_folder" not in data:
                     data["upload_folder"] = ""
+                if "heartbeat_folder" not in data:
+                    data["heartbeat_folder"] = ""
+                if "diagnostics_folder" not in data:
+                    data["diagnostics_folder"] = ""
                 return data
         except Exception:
             logger.debug("Could not read provision file %s", p, exc_info=True)

@@ -12,13 +12,28 @@ WORK_DIR="/Library/Application Support/ScreenRecorder"
 UPDATE_DIR="$WORK_DIR/updates"
 LOG_DIR="/Library/Logs/ScreenRecorder"
 LOG="$LOG_DIR/updater.log"
-SHARED_LOG="/Users/Shared/ScreenRecorder_updater.log"
+SHARED_DIR="/Users/Shared/ScreenRecorder"
+SHARED_LOG="$SHARED_DIR/ScreenRecorder_updater.log"
 STATUS="$WORK_DIR/updater_status.json"
-SHARED_STATUS="/Users/Shared/ScreenRecorder_updater_status.json"
+SHARED_STATUS="$SHARED_DIR/ScreenRecorder_updater_status.json"
 TRIGGER="/Users/Shared/ScreenRecorder_update_now"
 LOCK_DIR="/var/run/$LABEL.lock"
 
-mkdir -p "$UPDATE_DIR" "$LOG_DIR" /Users/Shared 2>/dev/null || true
+prepare_shared_dir() {
+    mkdir -p /Users/Shared 2>/dev/null || true
+    if [ -L "$SHARED_DIR" ] || { [ -e "$SHARED_DIR" ] && [ ! -d "$SHARED_DIR" ]; }; then
+        SHARED_DIR="/var/tmp"
+        SHARED_LOG="$SHARED_DIR/ScreenRecorder_updater.log"
+        SHARED_STATUS="$SHARED_DIR/ScreenRecorder_updater_status.json"
+        return
+    fi
+    mkdir -p "$SHARED_DIR" 2>/dev/null || true
+    chown root:wheel "$SHARED_DIR" 2>/dev/null || true
+    chmod 755 "$SHARED_DIR" 2>/dev/null || true
+}
+
+prepare_shared_dir
+mkdir -p "$UPDATE_DIR" "$LOG_DIR" 2>/dev/null || true
 touch "$LOG" "$SHARED_LOG" 2>/dev/null || true
 chmod 644 "$LOG" "$SHARED_LOG" 2>/dev/null || true
 

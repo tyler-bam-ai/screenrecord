@@ -18,6 +18,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
+from .drive_utils import drive_query_literal, scoped_folder_id
+
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -45,6 +47,9 @@ class HeartbeatSender:
 
         drive_cfg = config["google_drive"]
         self.root_folder_id: str = drive_cfg["root_folder_id"]
+        self.heartbeat_parent_folder_id: str = scoped_folder_id(
+            drive_cfg, "heartbeat_folder_id"
+        )
 
         credentials_file = drive_cfg["credentials_file"]
         creds = Credentials.from_service_account_file(
@@ -182,7 +187,7 @@ class HeartbeatSender:
         # Ensure the _heartbeats folder exists
         if self._heartbeat_folder_id is None:
             self._heartbeat_folder_id = self._find_or_create_folder(
-                HEARTBEAT_FOLDER_NAME, self.root_folder_id
+                HEARTBEAT_FOLDER_NAME, self.heartbeat_parent_folder_id
             )
 
         media = MediaIoBaseUpload(
@@ -240,7 +245,7 @@ class HeartbeatSender:
     def _find_or_create_folder(self, name: str, parent_id: str) -> str:
         """Return the ID of an existing folder or create a new one."""
         query = (
-            f"name='{name}' and '{parent_id}' in parents "
+            f"name={drive_query_literal(name)} and {drive_query_literal(parent_id)} in parents "
             f"and mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false"
         )
@@ -273,7 +278,7 @@ class HeartbeatSender:
     def _find_file(self, name: str, parent_id: str) -> Optional[str]:
         """Find an existing file by name in a folder. Returns ID or None."""
         query = (
-            f"name='{name}' and '{parent_id}' in parents "
+            f"name={drive_query_literal(name)} and {drive_query_literal(parent_id)} in parents "
             f"and trashed=false"
         )
         results = (

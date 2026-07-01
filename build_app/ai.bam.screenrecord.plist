@@ -17,9 +17,9 @@
         <string>1</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/Shared/ai.bam.screenrecord.launchd.stdout.log</string>
+    <string>/Users/Shared/ScreenRecorder/ai.bam.screenrecord.launchd.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/Shared/ai.bam.screenrecord.launchd.stderr.log</string>
+    <string>/Users/Shared/ScreenRecorder/ai.bam.screenrecord.launchd.stderr.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

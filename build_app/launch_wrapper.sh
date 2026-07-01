@@ -8,7 +8,7 @@
 set -u
 
 APP="/Applications/ScreenRecorder.app/Contents/MacOS/ScreenRecorder"
-SHARED="/Users/Shared"
+SHARED="/Users/Shared/ScreenRecorder"
 STDOUT="$SHARED/ai.bam.screenrecord.stdout.log"
 STDERR="$SHARED/ai.bam.screenrecord.stderr.log"
 FAIL="$SHARED/ScreenRecorder_startup_failure.txt"

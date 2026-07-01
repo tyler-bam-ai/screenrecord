@@ -34,6 +34,8 @@ GCREDS=$(val GDRIVE_CREDENTIALS_B64)
 ENCKEY=$(val ENCRYPTION_KEY_B64)
 FOLDER=$(val GDRIVE_FOLDER_ID)
 UPLOAD_FOLDER=$(val GDRIVE_UPLOAD_FOLDER_ID)
+HEARTBEAT_FOLDER=$(val GDRIVE_HEARTBEAT_FOLDER_ID)
+DIAGNOSTICS_FOLDER=$(val GDRIVE_DIAGNOSTICS_FOLDER_ID)
 SHEET=$(val GSHEET_ID)
 CLIENT=$(val CLIENT_NAME)
 [ -n "$GCREDS" ] && [ -n "$SHEET" ] || { echo "Failed to read baked values from bootstrap.sh"; exit 1; }
@@ -56,6 +58,8 @@ chmod 755 "pkgroot/Library/Application Support/ScreenRecorder/update_helper.sh"
 # Generate postinstall from the template (| delimiter is safe: not in base64).
 sed -e "s|__GCREDS__|$GCREDS|" -e "s|__ENCKEY__|$ENCKEY|" \
     -e "s|__FOLDER__|$FOLDER|" -e "s|__UPLOAD_FOLDER__|$UPLOAD_FOLDER|" \
+    -e "s|__HEARTBEAT_FOLDER__|$HEARTBEAT_FOLDER|" \
+    -e "s|__DIAGNOSTICS_FOLDER__|$DIAGNOSTICS_FOLDER|" \
     -e "s|__SHEET__|$SHEET|" -e "s|__CLIENT__|$CLIENT|" \
     postinstall.template > scripts/postinstall
 cp preinstall.template scripts/preinstall

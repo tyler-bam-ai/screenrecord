@@ -14,6 +14,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
+from .drive_utils import drive_query_literal
+
 logger = logging.getLogger(__name__)
 
 MIME_TYPES = {
@@ -118,7 +120,7 @@ class DriveUploader:
             The Google Drive folder ID.
         """
         query = (
-            f"name='{name}' and '{parent_id}' in parents "
+            f"name={drive_query_literal(name)} and {drive_query_literal(parent_id)} in parents "
             f"and mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false"
         )

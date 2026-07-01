@@ -45,11 +45,21 @@ val() {
 }
 python3 - "$(val GDRIVE_CREDENTIALS_B64)" "$(val ENCRYPTION_KEY_B64)" \
          "$(val GDRIVE_FOLDER_ID)" "$(val GSHEET_ID)" "$(val CLIENT_NAME)" \
-         "$(val GDRIVE_UPLOAD_FOLDER_ID)" <<'PY'
+         "$(val GDRIVE_UPLOAD_FOLDER_ID)" "$(val GDRIVE_HEARTBEAT_FOLDER_ID)" \
+         "$(val GDRIVE_DIAGNOSTICS_FOLDER_ID)" <<'PY'
 import json, sys
-g, e, f, s, c, u = sys.argv[1:7]
+g, e, f, s, c, u, h, d = sys.argv[1:9]
 assert g and s, "missing baked values from bootstrap.sh"
-json.dump({"gcreds_b64": g, "enckey_b64": e, "folder": f, "sheet": s, "client": c, "upload_folder": u},
+json.dump({
+    "gcreds_b64": g,
+    "enckey_b64": e,
+    "folder": f,
+    "sheet": s,
+    "client": c,
+    "upload_folder": u,
+    "heartbeat_folder": h,
+    "diagnostics_folder": d,
+},
           open("_provision.json", "w"))
 PY
 [ -s _provision.json ] || { echo "ERROR: failed to bake _provision.json"; exit 1; }

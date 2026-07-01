@@ -13,7 +13,6 @@
  * 7. Paste the URL into your dashboard's APPS_SCRIPT_URL config
  */
 
-var DEFAULT_COMMAND_API_TOKEN = 'ScreenRecord2026-command-v1';
 var ALLOWED_COMMANDS = {
   restart: true,
   stop: true,
@@ -27,8 +26,13 @@ function doPost(e) {
     var data = JSON.parse(e.postData.contents);
     var computerName = data.computer_name;
     var command = data.command || 'restart';
-    var expectedToken = PropertiesService.getScriptProperties().getProperty('COMMAND_API_TOKEN') || DEFAULT_COMMAND_API_TOKEN;
-    if (expectedToken && data.token !== expectedToken) {
+    var expectedToken = PropertiesService.getScriptProperties().getProperty('COMMAND_API_TOKEN');
+    if (!expectedToken) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ success: false, error: 'COMMAND_API_TOKEN is not configured' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    if (data.token !== expectedToken) {
       return ContentService.createTextOutput(
         JSON.stringify({ success: false, error: 'Unauthorized' })
       ).setMimeType(ContentService.MimeType.JSON);

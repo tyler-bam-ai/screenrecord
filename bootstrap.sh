@@ -32,6 +32,11 @@ GDRIVE_FOLDER_ID="0ANdodpyQPc2tUk9PVA"
 # encryption key; Google Drive does not provide a write-only folder permission.
 GDRIVE_UPLOAD_FOLDER_ID=""
 
+# Optional tenant-scoped folders for liveness logs and diagnostic bundles.
+# Leave empty to use GDRIVE_UPLOAD_FOLDER_ID when set, otherwise GDRIVE_FOLDER_ID.
+GDRIVE_HEARTBEAT_FOLDER_ID=""
+GDRIVE_DIAGNOSTICS_FOLDER_ID=""
+
 # Shared dashboard sheet — all agents report status here and poll it for
 # remote stop/start commands. Lives inside the "Screen Recordings" shared
 # drive (the service account has no My-Drive quota, so it cannot create its
@@ -398,6 +403,9 @@ recording:
 google_drive:
   credentials_file: "${INSTALL_DIR}/credentials.json"
   root_folder_id: "${GDRIVE_FOLDER_ID}"
+  upload_folder_id: "${GDRIVE_UPLOAD_FOLDER_ID}"
+  heartbeat_folder_id: "${GDRIVE_HEARTBEAT_FOLDER_ID}"
+  diagnostics_folder_id: "${GDRIVE_DIAGNOSTICS_FOLDER_ID}"
 
 encryption:
   key_file: "${ENCRYPTION_KEY_PATH:-}"
@@ -410,6 +418,7 @@ analysis:
 
 google_sheets:
   sheet_id: "${GSHEET_ID}"
+  make_public: false
 
 rag:
   enabled: false

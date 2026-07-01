@@ -1024,7 +1024,8 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
 // ===== CONFIGURATION =====
 const SHEET_ID = '1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU';
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz5MXgQZUTt7OSfmKN0OwOEfyqBV6I77-kbkNTvXJXePD4V0KxB668iNl3G8nYKMqKVWw/exec';
-const COMMAND_API_TOKEN = 'ScreenRecord2026-command-v1';
+const COMMAND_API_TOKEN = '';
+const COMMAND_TOKEN_STORAGE_KEY = 'screenrecord.commandApiToken';
 const DASHBOARD_PASSWORD = 'SinusRecord2026';
 const MACHINES_TAB = 'Machines';
 const RECORDINGS_TAB = 'Recordings';
@@ -1622,6 +1623,11 @@ async function sendCommand(computer, command) {
     showToast('Apps Script URL not configured in dashboard settings.', 'error');
     return;
   }
+  const commandToken = getCommandApiToken();
+  if (!commandToken) {
+    showToast('Command token required.', 'error');
+    return;
+  }
   const label = command === 'start' ? 'Starting' : command === 'stop' ? 'Pausing'
     : command === 'record_test' ? 'Requesting a 60s test clip from'
     : command === 'update_now' ? 'Requesting an update check from'
@@ -1631,7 +1637,7 @@ async function sendCommand(computer, command) {
     await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ computer_name: computer, command, token: COMMAND_API_TOKEN }),
+      body: JSON.stringify({ computer_name: computer, command, token: commandToken }),
       mode: 'no-cors',
     });
     const doneLabel = command === 'start' ? 'Start' : command === 'stop' ? 'Stop'
@@ -1647,6 +1653,15 @@ async function sendCommand(computer, command) {
   } catch (err) {
     showToast(`Command failed: ${err.message}`, 'error');
   }
+}
+
+function getCommandApiToken() {
+  let token = COMMAND_API_TOKEN || localStorage.getItem(COMMAND_TOKEN_STORAGE_KEY) || '';
+  token = token.trim();
+  if (token) return token;
+  token = (prompt('Command token') || '').trim();
+  if (token) localStorage.setItem(COMMAND_TOKEN_STORAGE_KEY, token);
+  return token;
 }
 
 // ===== EDITABLE MACHINE FIELDS =====

@@ -2,8 +2,7 @@
 
 Provides a centralized Google Sheets "dashboard" that tracks machine status,
 recording history, and remote commands.  The sheet is created automatically
-on first use and made publicly readable so it can serve as the data source
-for a static HTML dashboard.
+on first use when no sheet ID is configured.
 
 Tab layout
 ----------
@@ -86,6 +85,7 @@ class SheetsBackend:
 
         sheets_cfg = config.get("google_sheets", {})
         self._sheet_id: Optional[str] = sheets_cfg.get("sheet_id") or None
+        self._make_public_enabled: bool = bool(sheets_cfg.get("make_public", False))
 
         logger.info("Authenticating with Google Sheets service account.")
         try:
@@ -213,8 +213,10 @@ class SheetsBackend:
         # Write header rows
         self._write_headers()
 
-        # Make the sheet publicly readable
-        self._make_public()
+        if self._make_public_enabled:
+            self._make_public()
+        else:
+            logger.info("Sheet public-link sharing disabled by configuration.")
 
         return self._sheet_id
 

@@ -300,14 +300,9 @@ Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
 $localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
 $stagedExe = Stage-VerifiedExe $localExe
 
-# Stop the existing agent before touching provisioned files. Older builds can
-# leave credentials/config read-only or owned by another context.
-Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
-Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
-
-# --- 1. Fetch deployment values if possible ----------------------------------
+# --- 1. Fetch and validate deployment values if possible ----------------------
 $boot = $null
+$provision = $null
 if ($BootstrapFile) {
     Info "Reading deployment configuration from $BootstrapFile..."
     $boot = Get-Content -LiteralPath $BootstrapFile -Raw
@@ -320,6 +315,38 @@ if ($BootstrapFile) {
     }
 }
 
+if ($boot) {
+    $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
+    $keyB64   = Get-Baked $boot "ENCRYPTION_KEY_B64"
+    $folderId = Get-Baked $boot "GDRIVE_FOLDER_ID"
+    $uploadFolderId = ""
+    try { $uploadFolderId = Get-Baked $boot "GDRIVE_UPLOAD_FOLDER_ID" } catch { $uploadFolderId = "" }
+    $heartbeatFolderId = ""
+    try { $heartbeatFolderId = Get-Baked $boot "GDRIVE_HEARTBEAT_FOLDER_ID" } catch { $heartbeatFolderId = "" }
+    $diagnosticsFolderId = ""
+    try { $diagnosticsFolderId = Get-Baked $boot "GDRIVE_DIAGNOSTICS_FOLDER_ID" } catch { $diagnosticsFolderId = "" }
+    $sheetId  = Get-Baked $boot "GSHEET_ID"
+    $client   = Get-Baked $boot "CLIENT_NAME"
+
+    $provision = [pscustomobject]@{
+        CredentialsBytes = [Convert]::FromBase64String($credsB64)
+        KeyBytes = [Convert]::FromBase64String($keyB64)
+        FolderId = $folderId
+        UploadFolderId = $uploadFolderId
+        HeartbeatFolderId = $heartbeatFolderId
+        DiagnosticsFolderId = $diagnosticsFolderId
+        SheetId = $sheetId
+        Client = $client
+    }
+}
+
+# Stop the existing agent only after the new exe and provisioning inputs have
+# been validated. Older builds can leave config read-only or owned by another
+# context, so the repair/write path still runs after shutdown.
+Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
+Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
 # --- 2. Provision the target user's data directory ---------------------------
 $dataDir = Join-Path $target.Profile ".screenrecord"
 $recDir = Join-Path $dataDir "recordings"
@@ -330,23 +357,15 @@ if (-not $isUpgrade) {
     Remove-Item -LiteralPath (Join-Path $dataDir ".paused") -Force -ErrorAction SilentlyContinue
 }
 
-if ($boot) {
-    $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
-    $keyB64   = Get-Baked $boot "ENCRYPTION_KEY_B64"
-    $folderId = Get-Baked $boot "GDRIVE_FOLDER_ID"
-    $uploadFolderId = ""
-    try { $uploadFolderId = Get-Baked $boot "GDRIVE_UPLOAD_FOLDER_ID" } catch { $uploadFolderId = "" }
-    $sheetId  = Get-Baked $boot "GSHEET_ID"
-    $client   = Get-Baked $boot "CLIENT_NAME"
-
-    Write-ManagedBytes (Join-Path $dataDir "credentials.json") ([Convert]::FromBase64String($credsB64)) $target
-    Write-ManagedBytes (Join-Path $dataDir "encryption.key")  ([Convert]::FromBase64String($keyB64)) $target
+if ($provision) {
+    Write-ManagedBytes (Join-Path $dataDir "credentials.json") $provision.CredentialsBytes $target
+    Write-ManagedBytes (Join-Path $dataDir "encryption.key")  $provision.KeyBytes $target
 
     $employee = $target.Sam
     $computer = $env:COMPUTERNAME
     $dataY = $dataDir -replace '\\','/'
     $config = @"
-client_name: "$client"
+client_name: "$($provision.Client)"
 employee_name: "$employee"
 computer_name: "$computer"
 
@@ -359,8 +378,10 @@ recording:
 
 google_drive:
   credentials_file: "$dataY/credentials.json"
-  root_folder_id: "$folderId"
-  upload_folder_id: "$uploadFolderId"
+  root_folder_id: "$($provision.FolderId)"
+  upload_folder_id: "$($provision.UploadFolderId)"
+  heartbeat_folder_id: "$($provision.HeartbeatFolderId)"
+  diagnostics_folder_id: "$($provision.DiagnosticsFolderId)"
 
 encryption:
   key_file: "$dataY/encryption.key"
@@ -381,13 +402,14 @@ updater:
   manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
 
 google_sheets:
-  sheet_id: "$sheetId"
+  sheet_id: "$($provision.SheetId)"
+  make_public: false
 
 rag:
   enabled: false
 "@
     Write-ManagedText (Join-Path $dataDir "config.yaml") $config $target
-    Ok "Provisioned $dataDir ($employee / $computer / $client)"
+    Ok "Provisioned $dataDir ($employee / $computer / $($provision.Client))"
 } else {
     Ok "Created $dataDir; config will be written by the exe self-provisioner."
 }

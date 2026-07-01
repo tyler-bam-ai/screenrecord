@@ -73,6 +73,7 @@ class InputMonitor:
         self._pending_keys: List[str] = []
         self._pending_key_started_at: Optional[float] = None
         self._pending_key_last_at: Optional[float] = None
+        self._pending_key_segment: Optional[Tuple[str, float]] = None
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -149,9 +150,17 @@ class InputMonitor:
         if not self._running:
             return
         now = time.monotonic()
+        seg = None
+        try:
+            seg = self._segment_provider()
+        except Exception:
+            pass
+        if not seg:
+            return
         with self._lock:
             if not self._pending_keys:
                 self._pending_key_started_at = now
+                self._pending_key_segment = seg
             self._pending_keys.append(key_value)
             self._pending_key_last_at = now
             self._schedule_key_flush_locked()
@@ -178,9 +187,11 @@ class InputMonitor:
             keys = list(self._pending_keys)
             started_at = self._pending_key_started_at
             last_at = self._pending_key_last_at
+            segment = self._pending_key_segment
             self._pending_keys = []
             self._pending_key_started_at = None
             self._pending_key_last_at = None
+            self._pending_key_segment = None
             if self._key_timer is not None:
                 self._key_timer.cancel()
                 self._key_timer = None
@@ -209,6 +220,7 @@ class InputMonitor:
             cursor=None,
             emphasize=False,
             force_screenshot=True,
+            segment=segment,
         )
 
     def _record(
@@ -219,12 +231,14 @@ class InputMonitor:
         emphasize: bool,
         *,
         force_screenshot: bool = False,
+        segment: Optional[Tuple[str, float]] = None,
     ) -> None:
         if not self._running:
             return
-        seg = None
+        seg = segment
         try:
-            seg = self._segment_provider()
+            if seg is None:
+                seg = self._segment_provider()
         except Exception:
             pass
         if not seg:
@@ -288,7 +302,7 @@ class InputMonitor:
             return ""
         try:
             with mss.mss() as sct:
-                mon = sct.monitors[1]  # primary monitor
+                mon = sct.monitors[0]  # full virtual desktop across monitors
                 raw = sct.grab(mon)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
             draw = ImageDraw.Draw(img, "RGBA")

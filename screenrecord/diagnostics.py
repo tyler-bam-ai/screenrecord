@@ -172,6 +172,14 @@ def _build_bundle(
             (Path("/Users/Shared/ScreenRecorder_install_diagnostic.txt"), "visible_install_diagnostic.txt"),
             (Path("/Users/Shared/ScreenRecorder_updater.log"), "updater_shared.log"),
             (Path("/Users/Shared/ScreenRecorder_updater_status.json"), "updater_shared_status.json"),
+            (Path("/Users/Shared/ScreenRecorder/ai.bam.screenrecord.stdout.log"), "wrapper_stdout.log"),
+            (Path("/Users/Shared/ScreenRecorder/ai.bam.screenrecord.stderr.log"), "wrapper_stderr.log"),
+            (Path("/Users/Shared/ScreenRecorder/ai.bam.screenrecord.launchd.stdout.log"), "launchd_shared_stdout.log"),
+            (Path("/Users/Shared/ScreenRecorder/ai.bam.screenrecord.launchd.stderr.log"), "launchd_shared_stderr.log"),
+            (Path("/Users/Shared/ScreenRecorder/ScreenRecorder_startup_failure.txt"), "startup_failure.txt"),
+            (Path("/Users/Shared/ScreenRecorder/ScreenRecorder_install_diagnostic.txt"), "visible_install_diagnostic.txt"),
+            (Path("/Users/Shared/ScreenRecorder/ScreenRecorder_updater.log"), "updater_shared.log"),
+            (Path("/Users/Shared/ScreenRecorder/ScreenRecorder_updater_status.json"), "updater_shared_status.json"),
             (Path("/Library/Logs/ScreenRecorder/updater.log"), "updater.log"),
             (Path("/Library/Logs/ScreenRecorder/updater.launchd.out.log"), "updater_launchd_stdout.log"),
             (Path("/Library/Logs/ScreenRecorder/updater.launchd.err.log"), "updater_launchd_stderr.log"),
@@ -193,6 +201,9 @@ def _best_effort_config(data_dir: Path) -> Dict[str, Any]:
     base_drive = {
         "credentials_file": str(data_dir / "credentials.json"),
         "root_folder_id": baked.get("folder", ""),
+        "upload_folder_id": baked.get("upload_folder", ""),
+        "heartbeat_folder_id": baked.get("heartbeat_folder", ""),
+        "diagnostics_folder_id": baked.get("diagnostics_folder", ""),
     }
     base_sheets = {"sheet_id": baked.get("sheet", "")} if baked.get("sheet") else {}
     try:
@@ -203,6 +214,12 @@ def _best_effort_config(data_dir: Path) -> Dict[str, Any]:
             gd = data.get("google_drive") if isinstance(data.get("google_drive"), dict) else {}
             if not gd.get("root_folder_id") and baked.get("folder"):
                 data.setdefault("google_drive", {})["root_folder_id"] = baked.get("folder")
+            if not gd.get("upload_folder_id") and baked.get("upload_folder"):
+                data.setdefault("google_drive", {})["upload_folder_id"] = baked.get("upload_folder")
+            if not gd.get("heartbeat_folder_id") and baked.get("heartbeat_folder"):
+                data.setdefault("google_drive", {})["heartbeat_folder_id"] = baked.get("heartbeat_folder")
+            if not gd.get("diagnostics_folder_id") and baked.get("diagnostics_folder"):
+                data.setdefault("google_drive", {})["diagnostics_folder_id"] = baked.get("diagnostics_folder")
             credentials_file = gd.get("credentials_file")
             if (
                 not credentials_file
@@ -361,6 +378,12 @@ def _redacted_config_text(config: Dict[str, Any]) -> str:
             redacted["google_drive"]["credentials_file"] = "<redacted path>"
             if redacted["google_drive"].get("root_folder_id"):
                 redacted["google_drive"]["root_folder_id"] = "<set>"
+            if redacted["google_drive"].get("upload_folder_id"):
+                redacted["google_drive"]["upload_folder_id"] = "<set>"
+            if redacted["google_drive"].get("heartbeat_folder_id"):
+                redacted["google_drive"]["heartbeat_folder_id"] = "<set>"
+            if redacted["google_drive"].get("diagnostics_folder_id"):
+                redacted["google_drive"]["diagnostics_folder_id"] = "<set>"
         if "google_sheets" in redacted and redacted["google_sheets"].get("sheet_id"):
             redacted["google_sheets"]["sheet_id"] = "<set>"
         if "encryption" in redacted:
@@ -491,11 +514,13 @@ def _upload_zip(config: Dict[str, Any], zip_path: Path) -> str:
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
+    from .drive_utils import drive_query_literal, scoped_folder_id
+
     drive_cfg = config.get("google_drive") or {}
     credentials_file = drive_cfg.get("credentials_file") or ""
-    root_folder_id = drive_cfg.get("root_folder_id") or ""
-    if not credentials_file or not root_folder_id:
-        raise RuntimeError("Diagnostics upload unavailable: missing Drive credentials/root folder.")
+    parent_folder_id = scoped_folder_id(drive_cfg, "diagnostics_folder_id")
+    if not credentials_file or not parent_folder_id:
+        raise RuntimeError("Diagnostics upload unavailable: missing Drive credentials/folder.")
     if not Path(credentials_file).is_file():
         raise RuntimeError(f"Diagnostics upload unavailable: credentials file missing at {credentials_file}.")
     old_timeout = socket.getdefaulttimeout()
@@ -505,7 +530,7 @@ def _upload_zip(config: Dict[str, Any], zip_path: Path) -> str:
             credentials_file, scopes=SCOPES
         )
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        diagnostics_id = _find_or_create_folder(service, DIAGNOSTICS_FOLDER_NAME, root_folder_id)
+        diagnostics_id = _find_or_create_folder(service, DIAGNOSTICS_FOLDER_NAME, parent_folder_id)
         client = _safe_drive_name(str(config.get("client_name") or "Unassigned"))
         computer = _safe_drive_name(str(config.get("computer_name") or "Unknown"))
         client_id = _find_or_create_folder(service, client, diagnostics_id)
@@ -536,8 +561,10 @@ def _upload_zip(config: Dict[str, Any], zip_path: Path) -> str:
 
 
 def _find_or_create_folder(service: Any, name: str, parent_id: str) -> str:
-    safe_name = _drive_query_literal(name)
-    safe_parent = _drive_query_literal(parent_id)
+    from .drive_utils import drive_query_literal
+
+    safe_name = drive_query_literal(name)
+    safe_parent = drive_query_literal(parent_id)
     query = (
         f"name={safe_name} and {safe_parent} in parents "
         "and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -683,7 +710,3 @@ def _safe_token(value: str) -> str:
 
 def _safe_drive_name(value: str) -> str:
     return re.sub(r"[\r\n/]+", "-", value.strip())[:120] or "Unknown"
-
-
-def _drive_query_literal(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"

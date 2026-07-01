@@ -30,6 +30,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "credentials_file": "credentials.json",
         "root_folder_id": "",
         "upload_folder_id": "",
+        "heartbeat_folder_id": "",
+        "diagnostics_folder_id": "",
     },
     "encryption": {
         "key_file": "",
@@ -39,6 +41,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "gemini_api_key": "",
         "xai_api_key": "",
         "openrouter_api_key": "",
+    },
+    "google_sheets": {
+        "sheet_id": "",
+        "make_public": False,
     },
     "input_monitor": {
         "enabled": True,

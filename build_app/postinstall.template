@@ -8,13 +8,27 @@ LOG="/var/tmp/ai.bam.screenrecord.postinstall.log"
 exec >>"$LOG" 2>&1
 echo "==== ScreenRecorder postinstall $(date -u '+%Y-%m-%dT%H:%M:%SZ') ===="
 
-prepare_shared_logs() {
+SHARED_DIR="/Users/Shared/ScreenRecorder"
+
+prepare_shared_dir() {
     mkdir -p /Users/Shared 2>/dev/null || true
+    if [ -L "$SHARED_DIR" ] || { [ -e "$SHARED_DIR" ] && [ ! -d "$SHARED_DIR" ]; }; then
+        echo "WARNING: $SHARED_DIR is not a safe directory; using /var/tmp for visible diagnostics."
+        SHARED_DIR="/var/tmp"
+        return
+    fi
+    mkdir -p "$SHARED_DIR" 2>/dev/null || true
+    chown root:wheel "$SHARED_DIR" 2>/dev/null || true
+    chmod 755 "$SHARED_DIR" 2>/dev/null || true
+}
+
+prepare_shared_logs() {
+    prepare_shared_dir
     for P in \
-        /Users/Shared/ai.bam.screenrecord.stdout.log \
-        /Users/Shared/ai.bam.screenrecord.stderr.log \
-        /Users/Shared/ai.bam.screenrecord.launchd.stdout.log \
-        /Users/Shared/ai.bam.screenrecord.launchd.stderr.log
+        "$SHARED_DIR/ai.bam.screenrecord.stdout.log" \
+        "$SHARED_DIR/ai.bam.screenrecord.stderr.log" \
+        "$SHARED_DIR/ai.bam.screenrecord.launchd.stdout.log" \
+        "$SHARED_DIR/ai.bam.screenrecord.launchd.stderr.log"
     do
         touch "$P" 2>/dev/null || true
         chmod 666 "$P" 2>/dev/null || true
@@ -25,11 +39,12 @@ prepare_shared_logs
 write_updater_status() {
     STATUS_VALUE="$1"
     MESSAGE="$2"
-    mkdir -p "/Library/Application Support/ScreenRecorder" /Users/Shared 2>/dev/null || true
+    prepare_shared_dir
+    mkdir -p "/Library/Application Support/ScreenRecorder" 2>/dev/null || true
     NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     for TARGET in \
         "/Library/Application Support/ScreenRecorder/updater_status.json" \
-        "/Users/Shared/ScreenRecorder_updater_status.json"
+        "$SHARED_DIR/ScreenRecorder_updater_status.json"
     do
         {
             printf '{"status":"%s","message":"%s","platform":"mac","last_checked":"%s"}\n' \
@@ -41,8 +56,8 @@ write_updater_status() {
 
 write_visible_install_diagnostic() {
     REASON="$1"
-    mkdir -p /Users/Shared 2>/dev/null || true
-    SHARED="/Users/Shared/ScreenRecorder_install_diagnostic.txt"
+    prepare_shared_dir
+    SHARED="$SHARED_DIR/ScreenRecorder_install_diagnostic.txt"
     FALLBACK="/var/tmp/ScreenRecorder_install_diagnostic.txt"
     TARGET="$SHARED"
     if ! touch "$TARGET" 2>/dev/null; then
@@ -106,9 +121,10 @@ write_visible_install_diagnostic() {
 start_updater_daemon() {
     # Start the root updater helper installed by this pkg. During a helper-driven
     # update, do not unload the very LaunchDaemon that is running installer.
-    mkdir -p /Library/Logs/ScreenRecorder /Users/Shared 2>/dev/null || true
-    touch /Library/Logs/ScreenRecorder/updater.log /Users/Shared/ScreenRecorder_updater.log 2>/dev/null || true
-    chmod 644 /Library/Logs/ScreenRecorder/updater.log /Users/Shared/ScreenRecorder_updater.log 2>/dev/null || true
+    prepare_shared_dir
+    mkdir -p /Library/Logs/ScreenRecorder 2>/dev/null || true
+    touch /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
+    chmod 644 /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
     if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ]; then
         echo "Skipping updater LaunchDaemon reload during helper-driven install."
         return
@@ -204,6 +220,8 @@ google_drive:
   credentials_file: "$DIR/credentials.json"
   root_folder_id: "__FOLDER__"
   upload_folder_id: "__UPLOAD_FOLDER__"
+  heartbeat_folder_id: "__HEARTBEAT_FOLDER__"
+  diagnostics_folder_id: "__DIAGNOSTICS_FOLDER__"
 
 encryption:
   key_file: "$DIR/encryption.key"
@@ -225,6 +243,7 @@ updater:
 
 google_sheets:
   sheet_id: "__SHEET__"
+  make_public: false
 
 rag:
   enabled: false
@@ -273,16 +292,16 @@ sleep 3
     ls -la "$DIR" 2>&1
     echo
     echo "### stdout"
-    tail -80 /Users/Shared/ai.bam.screenrecord.stdout.log 2>&1
+    tail -80 "$SHARED_DIR/ai.bam.screenrecord.stdout.log" 2>&1
     echo
     echo "### stderr"
-    tail -80 /Users/Shared/ai.bam.screenrecord.stderr.log 2>&1
+    tail -80 "$SHARED_DIR/ai.bam.screenrecord.stderr.log" 2>&1
     echo
     echo "### launchd stdout"
-    tail -80 /Users/Shared/ai.bam.screenrecord.launchd.stdout.log 2>&1
+    tail -80 "$SHARED_DIR/ai.bam.screenrecord.launchd.stdout.log" 2>&1
     echo
     echo "### launchd stderr"
-    tail -80 /Users/Shared/ai.bam.screenrecord.launchd.stderr.log 2>&1
+    tail -80 "$SHARED_DIR/ai.bam.screenrecord.launchd.stderr.log" 2>&1
     echo
     echo "### agent log"
     tail -120 "$DIR/screenrecord.log" 2>&1
