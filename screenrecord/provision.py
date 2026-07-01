@@ -39,6 +39,7 @@ google_drive:
   upload_folder_id: "{upload_folder}"
   heartbeat_folder_id: "{heartbeat_folder}"
   diagnostics_folder_id: "{diagnostics_folder}"
+  allow_public_links: false
 
 encryption:
   key_file: "{dir}/encryption.key"
@@ -204,6 +205,7 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "upload_folder_id": vals.get("upload_folder", ""),
             "heartbeat_folder_id": vals.get("heartbeat_folder", ""),
             "diagnostics_folder_id": vals.get("diagnostics_folder", ""),
+            "allow_public_links": False,
         },
         "encryption": {
             "key_file": str(dir_ / "encryption.key"),

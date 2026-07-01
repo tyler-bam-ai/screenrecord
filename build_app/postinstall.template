@@ -221,6 +221,7 @@ google_drive:
   upload_folder_id: "__UPLOAD_FOLDER__"
   heartbeat_folder_id: "__HEARTBEAT_FOLDER__"
   diagnostics_folder_id: "__DIAGNOSTICS_FOLDER__"
+  allow_public_links: false
 
 encryption:
   key_file: "$DIR/encryption.key"

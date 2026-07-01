@@ -32,6 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "upload_folder_id": "",
         "heartbeat_folder_id": "",
         "diagnostics_folder_id": "",
+        "allow_public_links": False,
     },
     "encryption": {
         "key_file": "",

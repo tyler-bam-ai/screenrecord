@@ -382,6 +382,7 @@ google_drive:
   upload_folder_id: "$($provision.UploadFolderId)"
   heartbeat_folder_id: "$($provision.HeartbeatFolderId)"
   diagnostics_folder_id: "$($provision.DiagnosticsFolderId)"
+  allow_public_links: false
 
 encryption:
   key_file: "$dataY/encryption.key"

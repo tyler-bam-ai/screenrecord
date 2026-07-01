@@ -50,6 +50,7 @@ class DriveUploader:
         credentials_file = drive_cfg["credentials_file"]
         self.root_folder_id = drive_cfg["root_folder_id"]
         self.upload_folder_id = drive_cfg.get("upload_folder_id") or ""
+        self.allow_public_links = bool(drive_cfg.get("allow_public_links", False))
         self.employee_name = config["employee_name"]
         self.computer_name = config["computer_name"]
         self.client_name = config.get("client_name", "")
@@ -317,7 +318,7 @@ class DriveUploader:
     # ------------------------------------------------------------------
 
     def get_shareable_link(self, file_id: str) -> str:
-        """Make a file readable by anyone with the link and return the URL.
+        """Return a Drive link, only making it public when explicitly enabled.
 
         Args:
             file_id: Google Drive file ID.
@@ -325,6 +326,13 @@ class DriveUploader:
         Returns:
             A shareable web link to the file.
         """
+        if not self.allow_public_links:
+            raise RuntimeError(
+                "Public Drive links are disabled. Set "
+                "google_drive.allow_public_links=true only for a deliberately "
+                "public deployment."
+            )
+
         permission = {"type": "anyone", "role": "reader"}
         try:
             self.service.permissions().create(

@@ -406,6 +406,7 @@ google_drive:
   upload_folder_id: "${GDRIVE_UPLOAD_FOLDER_ID}"
   heartbeat_folder_id: "${GDRIVE_HEARTBEAT_FOLDER_ID}"
   diagnostics_folder_id: "${GDRIVE_DIAGNOSTICS_FOLDER_ID}"
+  allow_public_links: false
 
 encryption:
   key_file: "${ENCRYPTION_KEY_PATH:-}"
