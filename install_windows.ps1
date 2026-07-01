@@ -171,6 +171,7 @@ Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
 # Stop the existing agent before touching provisioned files. Older builds can
 # leave credentials/config read-only or owned by another context.
 Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
+Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
 # --- 1. Fetch deployment values if possible ----------------------------------
@@ -254,6 +255,7 @@ New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $exeDest = Join-Path $installDir "ScreenRecorder.exe"
 
 Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
+Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
 $localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
