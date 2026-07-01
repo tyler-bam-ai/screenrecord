@@ -13,9 +13,8 @@ SHARED_DIR="/Users/Shared/ScreenRecorder"
 prepare_shared_dir() {
     mkdir -p /Users/Shared 2>/dev/null || true
     if [ -L "$SHARED_DIR" ] || { [ -e "$SHARED_DIR" ] && [ ! -d "$SHARED_DIR" ]; }; then
-        echo "WARNING: $SHARED_DIR is not a safe directory; using /var/tmp for visible diagnostics."
-        SHARED_DIR="/var/tmp"
-        return
+        echo "Removing unsafe $SHARED_DIR path before recreating root-owned shared directory."
+        rm -f "$SHARED_DIR" 2>/dev/null || true
     fi
     mkdir -p "$SHARED_DIR" 2>/dev/null || true
     chown root:wheel "$SHARED_DIR" 2>/dev/null || true

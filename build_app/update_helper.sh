@@ -22,10 +22,7 @@ LOCK_DIR="/var/run/$LABEL.lock"
 prepare_shared_dir() {
     mkdir -p /Users/Shared 2>/dev/null || true
     if [ -L "$SHARED_DIR" ] || { [ -e "$SHARED_DIR" ] && [ ! -d "$SHARED_DIR" ]; }; then
-        SHARED_DIR="/var/tmp"
-        SHARED_LOG="$SHARED_DIR/ScreenRecorder_updater.log"
-        SHARED_STATUS="$SHARED_DIR/ScreenRecorder_updater_status.json"
-        return
+        rm -f "$SHARED_DIR" 2>/dev/null || true
     fi
     mkdir -p "$SHARED_DIR" 2>/dev/null || true
     chown root:wheel "$SHARED_DIR" 2>/dev/null || true
