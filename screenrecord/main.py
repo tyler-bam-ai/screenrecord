@@ -996,15 +996,24 @@ class ScreenRecordService:
         upload_path = str(zip_path)
         if self.encryptor is not None:
             upload_path = str(self.encryptor.encrypt_in_place(str(zip_path)))
+        uploaded_ok = False
         try:
             fid = self.uploader.upload_with_retry(upload_path, delete_after=False)
             if fid:
+                uploaded_ok = True
                 logger.info("Input events uploaded: %s -> %s",
                             os.path.basename(upload_path), fid)
         except Exception:
             logger.exception("Failed to upload input events for %s", stem)
 
-        # Clean up local event artifacts.
+        if not uploaded_ok:
+            logger.warning(
+                "Keeping local input event artifacts for %s because upload did not succeed.",
+                stem,
+            )
+            return
+
+        # Clean up local event artifacts only after confirmed upload.
         cleanup = [events_file, zip_path, Path(upload_path)]
         for p in cleanup:
             try:
