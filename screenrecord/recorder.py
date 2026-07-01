@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Minimum free disk space (in bytes) before we stop recording.
 MIN_DISK_SPACE_BYTES = 500 * 1024 * 1024  # 500 MB
+FFMPEG_OVERRUN_GRACE_SECONDS = 60
 
 
 class ScreenRecorder:
@@ -103,6 +104,10 @@ class ScreenRecorder:
         if self._current_segment_started_at is None:
             return None
         return max(0.0, time.monotonic() - self._current_segment_started_at)
+
+    @property
+    def manager_thread_alive(self) -> bool:
+        return bool(self._manager_thread is not None and self._manager_thread.is_alive())
 
     @property
     def current_output_path(self) -> str:
@@ -191,49 +196,76 @@ class ScreenRecorder:
     def _recording_loop(self) -> None:
         """Main loop: launch FFmpeg, wait for it to finish, enqueue, repeat."""
         while not self._stop_event.is_set():
-            if not self._check_disk_space():
-                logger.error("Insufficient disk space. Pausing for 60s.")
-                self._stop_event.wait(timeout=60)
-                continue
-
-            output_path = self._generate_output_path()
-            self._current_output = output_path
-            self._current_segment_started_at = time.monotonic()
-
             try:
-                self._launch_ffmpeg(output_path)
-            except Exception as exc:
-                self._last_error = f"ffmpeg_launch_failed: {exc}"
-                logger.exception("Failed to launch FFmpeg. Retrying in 10s.")
-                self._stop_event.wait(timeout=10)
-                continue
+                if not self._check_disk_space():
+                    logger.error("Insufficient disk space. Pausing for 60s.")
+                    self._stop_event.wait(timeout=60)
+                    continue
 
-            # Wait for FFmpeg to exit (either duration reached or error).
-            proc = self._process
-            while proc is not None and proc.poll() is None:
+                output_path = self._generate_output_path()
+                self._current_output = output_path
+                self._current_segment_started_at = time.monotonic()
+
+                try:
+                    self._launch_ffmpeg(output_path)
+                except Exception as exc:
+                    self._last_error = f"ffmpeg_launch_failed: {exc}"
+                    self._current_output = None
+                    self._current_segment_started_at = None
+                    logger.exception("Failed to launch FFmpeg. Retrying in 10s.")
+                    self._stop_event.wait(timeout=10)
+                    continue
+
+                # Wait for FFmpeg to exit (either duration reached or error).
+                proc = self._process
+                max_runtime = self._segment_duration + FFMPEG_OVERRUN_GRACE_SECONDS
+                while proc is not None and proc.poll() is None:
+                    if self._stop_event.is_set():
+                        self._terminate_ffmpeg()
+                        break
+                    age = self.current_segment_age_seconds
+                    if age is not None and age > max_runtime:
+                        self._last_error = (
+                            f"ffmpeg_timeout_after_{int(age)}s"
+                        )
+                        logger.warning(
+                            "FFmpeg exceeded segment duration (%ss + %ss grace); restarting capture.",
+                            self._segment_duration,
+                            FFMPEG_OVERRUN_GRACE_SECONDS,
+                        )
+                        self._terminate_ffmpeg()
+                        break
+                    time.sleep(1)
+
+                # Wait for stderr thread to finish reading.
+                if self._stderr_thread is not None and self._stderr_thread.is_alive():
+                    self._stderr_thread.join(timeout=5)
+
                 if self._stop_event.is_set():
-                    self._terminate_ffmpeg()
                     break
-                time.sleep(1)
 
-            # Wait for stderr thread to finish reading.
-            if self._stderr_thread is not None and self._stderr_thread.is_alive():
-                self._stderr_thread.join(timeout=5)
-
-            if self._stop_event.is_set():
-                break
-
-            # FFmpeg exited normally (duration reached) — enqueue segment.
-            retcode = proc.returncode if proc else -1
-            if retcode == 0:
-                self._enqueue_current_if_valid()
-            else:
-                self._last_error = f"ffmpeg_exit_code_{retcode}"
-                logger.error("FFmpeg exited with code %d.", retcode)
-                # Still try to enqueue if file has content.
-                self._enqueue_current_if_valid()
-                # Brief pause before retry.
-                self._stop_event.wait(timeout=5)
+                # FFmpeg exited normally (duration reached) — enqueue segment.
+                retcode = proc.returncode if proc else -1
+                if retcode == 0:
+                    self._enqueue_current_if_valid()
+                else:
+                    if not self._last_error:
+                        self._last_error = f"ffmpeg_exit_code_{retcode}"
+                    logger.error("FFmpeg exited with code %d.", retcode)
+                    # Still try to enqueue if file has content.
+                    self._enqueue_current_if_valid()
+                    # Brief pause before retry.
+                    self._stop_event.wait(timeout=5)
+            except Exception as exc:
+                self._last_error = f"recording_loop_exception: {type(exc).__name__}: {exc}"
+                logger.exception("Recording loop error. Restarting capture loop in 10s.")
+                try:
+                    self._terminate_ffmpeg()
+                except Exception:
+                    logger.debug("Error while terminating FFmpeg after loop exception.", exc_info=True)
+                self._current_output = None
+                self._current_segment_started_at = None
+                self._stop_event.wait(timeout=10)
 
     # ------------------------------------------------------------------
     # FFmpeg lifecycle
@@ -318,23 +350,31 @@ class ScreenRecorder:
         if path is None:
             return
 
-        if path.exists() and path.stat().st_size > 0:
-            self._segments_completed += 1
-            self._last_segment_completed_at = datetime.now().astimezone().isoformat()
-            self._last_error = ""
-            self.completed_queue.put(path)
-            logger.info(
-                "Segment #%d completed: %s (%.2f MB)",
-                self._segments_completed,
-                path.name,
-                path.stat().st_size / (1024 * 1024),
-            )
-        else:
-            self._last_error = f"segment_missing_or_empty: {path}"
-            logger.warning("Segment file missing or empty: %s", path)
+        try:
+            try:
+                size_bytes = path.stat().st_size if path.exists() else 0
+            except OSError as exc:
+                size_bytes = 0
+                self._last_error = f"segment_stat_failed: {type(exc).__name__}: {exc}"
+                logger.warning("Could not stat segment file %s: %s", path, exc)
 
-        self._current_output = None
-        self._current_segment_started_at = None
+            if size_bytes > 0:
+                self._segments_completed += 1
+                self._last_segment_completed_at = datetime.now().astimezone().isoformat()
+                self._last_error = ""
+                logger.info(
+                    "Segment #%d completed: %s (%.2f MB)",
+                    self._segments_completed,
+                    path.name,
+                    size_bytes / (1024 * 1024),
+                )
+                self.completed_queue.put(path)
+            else:
+                self._last_error = f"segment_missing_or_empty: {path}"
+                logger.warning("Segment file missing or empty: %s", path)
+        finally:
+            self._current_output = None
+            self._current_segment_started_at = None
 
     def _read_stderr(self) -> None:
         """Consume FFmpeg stderr to prevent pipe blocking."""

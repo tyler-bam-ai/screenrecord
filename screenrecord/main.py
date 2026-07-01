@@ -339,6 +339,10 @@ class ScreenRecordService:
         paused = self._is_paused()
         segment_duration = self._segment_duration_seconds()
         recorder_active = bool(self.recorder is not None and self.recorder.is_recording)
+        recorder_manager_thread_alive = bool(
+            self.recorder is not None
+            and getattr(self.recorder, "manager_thread_alive", False)
+        )
         upload_thread_alive = bool(
             self._upload_thread is not None and self._upload_thread.is_alive()
         )
@@ -369,6 +373,9 @@ class ScreenRecordService:
         elif not paused and not recorder_active:
             problem = "recorder_not_active"
             detail = "Recorder object is not active."
+        elif not paused and recorder_active and not recorder_manager_thread_alive:
+            problem = "capture_loop_dead"
+            detail = "Recorder manager thread is not running."
         elif not paused and recorder_active and not upload_thread_alive:
             problem = "processing_thread_dead"
             detail = "Recorder is active but the processing/upload thread is not running."
@@ -432,6 +439,7 @@ class ScreenRecordService:
                 runtime_health=problem or "ok",
                 runtime_health_detail=detail[:500],
                 recorder_active=recorder_active,
+                recorder_manager_thread_alive=recorder_manager_thread_alive,
                 upload_thread_alive=upload_thread_alive,
                 segment_duration_seconds=segment_duration,
                 current_segment_age_seconds=(

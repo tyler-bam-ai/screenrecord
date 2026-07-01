@@ -39,7 +39,7 @@ chmod +x scripts/postinstall
 
 # Build the component pkg, then wrap as a signed distribution pkg (MDM needs it).
 pkgbuild --root pkgroot --scripts scripts \
-    --identifier ai.bam.screenrecord.pkg --version 1.4.11 \
+    --identifier ai.bam.screenrecord.pkg --version 1.4.12 \
     --install-location / dist/.component.pkg >/dev/null
 
 INSTALLER_ID=$(security find-identity -v 2>/dev/null \
