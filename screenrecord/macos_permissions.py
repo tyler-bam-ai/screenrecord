@@ -1,11 +1,9 @@
-"""Trigger the required macOS Screen Recording prompt at startup.
+"""Trigger/report the required macOS privacy permissions at startup.
 
 macOS never lets an app *grant* itself Screen Recording / Accessibility / Input
 Monitoring — only the user can, in System Settings. But an app can ask the OS to
-show the Screen Recording prompt (the "... would like to ... Open System
-Settings" dialog) instead of failing silently. The managed macOS package does
-not use the optional input monitor, so Accessibility/Input Monitoring requests
-are deliberately not fired on launch.
+show the Screen Recording prompt and, when input capture is enabled, request the
+additional event-monitoring permissions instead of failing silently.
 
 Uses ctypes against the system frameworks so there's no extra dependency to
 bundle (pyobjc isn't in the frozen build).
@@ -19,17 +17,15 @@ import sys
 logger = logging.getLogger(__name__)
 
 
-def request_all(logger_=None) -> None:
-    """Ask macOS to prompt for Screen Recording. No-op off macOS."""
+def request_all(logger_=None, *, input_monitor_enabled: bool = False) -> None:
+    """Ask macOS to prompt for required permissions. No-op off macOS."""
     log = logger_ or logger
     if sys.platform != "darwin":
         return
     _request_screen_recording(log)
-    # Do not request Accessibility/Input Monitoring during normal recorder
-    # startup. They are only needed for the optional input-monitor feature,
-    # which the managed macOS package disables. In frozen launchd builds the
-    # low-level prompt calls for those permissions can crash the process before
-    # it has a chance to report to the dashboard.
+    if input_monitor_enabled:
+        _request_accessibility(log)
+        _request_input_monitoring(log)
 
 
 def _load(framework: str):
@@ -41,7 +37,7 @@ def _load(framework: str):
 # Status checks (non-prompting) — for reporting to the dashboard
 # --------------------------------------------------------------------------
 
-def check_all() -> str:
+def check_all(*, input_monitor_enabled: bool = False) -> str:
     """Return a permission-status string for the dashboard.
 
     'ok' when everything needed is granted; otherwise 'MISSING: ...' naming the
@@ -54,6 +50,11 @@ def check_all() -> str:
     missing = []
     if not _granted_screen_recording():
         missing.append("Screen Recording")
+    if input_monitor_enabled:
+        if not _granted_accessibility():
+            missing.append("Accessibility")
+        if not _granted_input_monitoring():
+            missing.append("Input Monitoring")
     return "ok" if not missing else "MISSING: " + ", ".join(missing)
 
 
@@ -73,6 +74,20 @@ def _granted_accessibility() -> bool:
         ax = _load("ApplicationServices")
         ax.AXIsProcessTrusted.restype = ctypes.c_bool
         return bool(ax.AXIsProcessTrusted())
+    except Exception:
+        pass
+    return True
+
+
+def _granted_input_monitoring() -> bool:
+    try:
+        iokit = _load("IOKit")
+        if hasattr(iokit, "IOHIDCheckAccess"):
+            iokit.IOHIDCheckAccess.restype = ctypes.c_uint32
+            iokit.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+            kIOHIDRequestTypeListenEvent = 1
+            kIOHIDAccessTypeGranted = 0
+            return iokit.IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     except Exception:
         pass
     return True

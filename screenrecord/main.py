@@ -140,12 +140,16 @@ class ScreenRecordService:
 
         self._upload_diagnostics_once("startup")
 
-        # On macOS, ask the OS to show the Screen Recording prompt instead of
-        # failing silently. The managed package disables the optional input
-        # monitor, so Accessibility/Input Monitoring prompts are not requested.
+        # On macOS, ask the OS to show the relevant privacy prompts instead of
+        # failing silently.
         try:
             from . import macos_permissions
-            macos_permissions.request_all(logger)
+            macos_permissions.request_all(
+                logger,
+                input_monitor_enabled=bool(
+                    self.config.get("input_monitor", {}).get("enabled", False)
+                ),
+            )
         except Exception:
             logger.debug("macOS permission prompt step skipped", exc_info=True)
         logger.info(
@@ -447,7 +451,11 @@ class ScreenRecordService:
     def _permission_status(self) -> str:
         try:
             from . import macos_permissions
-            status = macos_permissions.check_all()
+            status = macos_permissions.check_all(
+                input_monitor_enabled=bool(
+                    self.config.get("input_monitor", {}).get("enabled", False)
+                )
+            )
         except Exception:
             return "ok"
         if (
@@ -455,7 +463,12 @@ class ScreenRecordService:
             and status.lower().startswith("missing:")
             and "screen recording" in status.lower()
         ):
-            return "ok"
+            missing = [
+                item.strip()
+                for item in status[len("MISSING:"):].split(",")
+                if item.strip() and item.strip().lower() != "screen recording"
+            ]
+            return "ok" if not missing else "MISSING: " + ", ".join(missing)
         return status
 
     def _dashboard_status(self) -> str:

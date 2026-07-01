@@ -182,9 +182,11 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "enabled": False,
         },
         "input_monitor": {
-            "enabled": False,
+            "enabled": True,
             "capture_keystroke_text": True,
             "screenshot_min_interval": 0.0,
+            "keyboard_screenshot_debounce_sec": 1.0,
+            "keyboard_text_max_chars": 160,
         },
         "google_sheets": {
             "sheet_id": vals.get("sheet", ""),

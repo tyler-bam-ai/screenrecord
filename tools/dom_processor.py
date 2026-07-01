@@ -104,9 +104,9 @@ def _download(drv, fid, dst):
     fh.close()
 
 
-def _upload_png(drv, path, parent):
+def _upload_png(drv, path, parent, upload_name=None):
     """Archive the full-res screenshot in Drive (kept private)."""
-    meta = {"name": Path(path).name, "parents": [parent]}
+    meta = {"name": upload_name or Path(path).name, "parents": [parent]}
     media = MediaFileUpload(path, mimetype="image/png")
     return drv.files().create(body=meta, media_body=media, fields="id",
                               supportsAllDrives=True).execute()["id"]
@@ -129,6 +129,12 @@ def _thumb_data_uri(png_path: Path) -> str:
 def _event_detail(ev: dict) -> str:
     et = ev.get("event_type", "?")
     d = ev.get("details") or {}
+    if et == "key_sequence":
+        count = d.get("key_count", "")
+        text = str(d.get("text", "") or "")
+        if text and text != "<redacted>":
+            return f"{count} key(s) typed: {text}"
+        return f"{count} key(s) typed"
     if et == "key_press":
         return str(d.get("key", ""))
     if "click" in et:
@@ -179,7 +185,10 @@ def main():
         id_by_png, thumb_by_png = {}, {}
         if shots.is_dir():
             for png in sorted(shots.glob("*.png")):
-                id_by_png[png.name] = _upload_png(drv, str(png), shots_folder)
+                upload_name = f"{stem}__{png.name}"
+                id_by_png[png.name] = _upload_png(
+                    drv, str(png), shots_folder, upload_name=upload_name,
+                )
                 thumb_by_png[png.name] = _thumb_data_uri(png)
 
         for ev in events:
@@ -193,6 +202,7 @@ def main():
         print(f"  processed {stem}: {len(events)} events, {len(id_by_png)} screenshots")
 
     if new_rows:
+        new_rows.sort(key=lambda row: row[0])
         sht.spreadsheets().values().append(
             spreadsheetId=SHEET_ID, range=f"{DOM_TAB}!A1",
             valueInputOption="RAW", insertDataOption="INSERT_ROWS",
