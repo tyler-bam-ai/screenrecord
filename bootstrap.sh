@@ -56,6 +56,7 @@ OPENROUTER_API_KEY=""
 
 # Encryption key (base64-encoded 32-byte key)
 ENCRYPTION_KEY_B64="b3BkL0dwbWV0ZGRUQ0ltb0xCZ0tqUURjSFNnOHBvb0NIejh2cG5pOC8rOD0="
+ENCRYPTION_PUBLIC_KEY_B64="LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUFyK085eVp2S3RRWVlabTMxOEg0bgoxNDhGYzNzREdrS0JldDdHRkRFS1kvUVVocUZPcFoxb2JzTjRmVnNEK3RjeHBVRHVBNXFaVVVrY2J1bDZZMC9GCmJNVS80STlGaDlVMTRnUVd0aThrcUNJak8zNzB5SGFHQ3VxRGpNZEUxYlRiVjhSVXQyMG9QRWhJL1pCdTlUSzYKbzBKazh0TzNXQXVXaHNyb0o0K0w4c0Y1c3N6VW1aMGtsV2QyK1F0aUVpeGpFZkZ2NDl0ZXhsVjlOemVOVkxULwo5aGdhSU5wZ2VYMTYxM2t5dXhEdW9MTG1sTnVNQ3NYNi9UV3lnL3lRVVlPOU5UL1NXNWI3Y2JFQURJUG9CVytNCnVMTVhZRTJEM0ZCMUdyaUUyQWRLdDdmUWk2ZlpmMTAza3Q2aTA5UTd3aVJhRlc2UDR3WHJ2UndXMGRxZGZpZ2QKblZ5dm5kdkJxUDF5cXRzWTRaT3pVajJYOEgyQUxaTUtUN1ZRKzdzenZZN3BZWWhVS1IzL0kvOEQ2N1BjUDY2TQorSXB6NEVsMzRMeVRiYkQ4TExJalduK3IxV3ErVmlHbFJLWTl1KzZpMjlXc3ExZExQeEV4M1RjdEZYTW4rMlcwCnhkUkd4QThmdlkzcWVyd1BGZGg5QWRESnFSajNwY0oxdUtrNDVIbkdodWhYQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
 
 # === END CONFIGURATION ===
 
@@ -370,14 +371,22 @@ write_credentials() {
     echo "$GDRIVE_CREDENTIALS_B64" | base64 -d > "$INSTALL_DIR/credentials.json"
     chmod 600 "$INSTALL_DIR/credentials.json"
 
-    # Write encryption key (skip if placeholder)
-    if [ "$ENCRYPTION_KEY_B64" != "PASTE_KEY_HERE" ] && [ -n "$ENCRYPTION_KEY_B64" ]; then
+    # Prefer public-key envelope encryption so endpoints cannot decrypt captures.
+    if [ -n "${ENCRYPTION_PUBLIC_KEY_B64:-}" ]; then
+        rm -f "$INSTALL_DIR/encryption.key"
+        echo "$ENCRYPTION_PUBLIC_KEY_B64" | base64 -d > "$INSTALL_DIR/encryption_public_key.pem"
+        chmod 444 "$INSTALL_DIR/encryption_public_key.pem"
+        ENCRYPTION_KEY_PATH=""
+        ENCRYPTION_PUBLIC_KEY_PATH="${INSTALL_DIR}/encryption_public_key.pem"
+    elif [ "$ENCRYPTION_KEY_B64" != "PASTE_KEY_HERE" ] && [ -n "$ENCRYPTION_KEY_B64" ]; then
         rm -f "$INSTALL_DIR/encryption.key"
         echo "$ENCRYPTION_KEY_B64" | base64 -d > "$INSTALL_DIR/encryption.key"
         chmod 400 "$INSTALL_DIR/encryption.key"
         ENCRYPTION_KEY_PATH="${INSTALL_DIR}/encryption.key"
+        ENCRYPTION_PUBLIC_KEY_PATH=""
     else
         ENCRYPTION_KEY_PATH=""
+        ENCRYPTION_PUBLIC_KEY_PATH=""
     fi
 
     ok "Credentials written"
@@ -410,6 +419,7 @@ google_drive:
 
 encryption:
   key_file: "${ENCRYPTION_KEY_PATH:-}"
+  public_key_file: "${ENCRYPTION_PUBLIC_KEY_PATH:-}"
 
 analysis:
   enabled: false

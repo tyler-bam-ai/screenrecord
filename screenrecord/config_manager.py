@@ -36,6 +36,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "encryption": {
         "key_file": "",
+        "public_key_file": "",
     },
     "analysis": {
         "enabled": False,

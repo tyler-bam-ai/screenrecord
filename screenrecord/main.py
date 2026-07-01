@@ -191,10 +191,22 @@ class ScreenRecordService:
             self.rag_system = None
             logger.info("RAG system disabled")
 
-        # Initialize encryption if a key file is configured
+        # Initialize encryption. New managed builds use public-key envelope
+        # encryption so endpoints can encrypt captures without carrying a
+        # private/symmetric decrypt key. key_file remains for legacy builds.
         encryption_cfg = self.config.get("encryption", {})
+        public_key_file = encryption_cfg.get("public_key_file", "")
         key_file = encryption_cfg.get("key_file", "")
-        if key_file and os.path.isfile(key_file):
+        if public_key_file and os.path.isfile(public_key_file):
+            try:
+                self.encryptor = FileEncryptor.load_public_key(public_key_file)
+                logger.info("Encryption enabled (public key loaded from %s)", public_key_file)
+            except Exception:
+                logger.exception("Configured public encryption key is invalid.")
+                self.encryptor = None
+                self._recording_blocked_reason = "invalid_encryption_public_key"
+                self._upload_diagnostics_once("blocked-invalid_encryption_public_key")
+        elif key_file and os.path.isfile(key_file):
             try:
                 self.encryptor = FileEncryptor.load_key(key_file)
                 logger.info("Encryption enabled (key loaded from %s)", key_file)
@@ -205,7 +217,7 @@ class ScreenRecordService:
                 self._upload_diagnostics_once("blocked-invalid_encryption_key")
         else:
             self.encryptor = None
-            logger.info("Encryption disabled (no key_file configured)")
+            logger.info("Encryption disabled (no public_key_file/key_file configured)")
 
         # Initialize HIPAA compliance manager
         self.compliance = ComplianceManager(self.config)

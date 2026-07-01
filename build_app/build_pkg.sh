@@ -3,7 +3,7 @@
 #   /Applications/ScreenRecorder.app  (signed + notarized)
 #   /Library/LaunchAgents/ai.bam.screenrecord.plist
 #   /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist
-#   postinstall provisions ~/.screenrecord (config + creds + key) and starts it.
+#   postinstall provisions ~/.screenrecord (config + creds + public key) and starts it.
 # The pkg MUST be signed with a Developer ID Installer cert — MDM
 # (InstallEnterpriseApplication) rejects unsigned packages (they hang at
 # "waiting to install"). Notarize the signed pkg separately after this.
@@ -32,6 +32,7 @@ val() {
 }
 GCREDS=$(val GDRIVE_CREDENTIALS_B64)
 ENCKEY=$(val ENCRYPTION_KEY_B64)
+ENCPUB=$(val ENCRYPTION_PUBLIC_KEY_B64)
 FOLDER=$(val GDRIVE_FOLDER_ID)
 UPLOAD_FOLDER=$(val GDRIVE_UPLOAD_FOLDER_ID)
 HEARTBEAT_FOLDER=$(val GDRIVE_HEARTBEAT_FOLDER_ID)
@@ -56,7 +57,7 @@ chmod 755 "pkgroot/Library/Application Support/ScreenRecorder/launch_screenrecor
 chmod 755 "pkgroot/Library/Application Support/ScreenRecorder/update_helper.sh"
 
 # Generate postinstall from the template (| delimiter is safe: not in base64).
-sed -e "s|__GCREDS__|$GCREDS|" -e "s|__ENCKEY__|$ENCKEY|" \
+sed -e "s|__GCREDS__|$GCREDS|" -e "s|__ENCKEY__|$ENCKEY|" -e "s|__ENCPUB__|$ENCPUB|" \
     -e "s|__FOLDER__|$FOLDER|" -e "s|__UPLOAD_FOLDER__|$UPLOAD_FOLDER|" \
     -e "s|__HEARTBEAT_FOLDER__|$HEARTBEAT_FOLDER|" \
     -e "s|__DIAGNOSTICS_FOLDER__|$DIAGNOSTICS_FOLDER|" \

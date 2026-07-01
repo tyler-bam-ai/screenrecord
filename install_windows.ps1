@@ -385,6 +385,8 @@ if ($BootstrapFile) {
 if ($boot) {
     $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
     $keyB64   = Get-Baked $boot "ENCRYPTION_KEY_B64"
+    $publicKeyB64 = ""
+    try { $publicKeyB64 = Get-Baked $boot "ENCRYPTION_PUBLIC_KEY_B64" } catch { $publicKeyB64 = "" }
     $folderId = Get-Baked $boot "GDRIVE_FOLDER_ID"
     $uploadFolderId = ""
     try { $uploadFolderId = Get-Baked $boot "GDRIVE_UPLOAD_FOLDER_ID" } catch { $uploadFolderId = "" }
@@ -394,10 +396,15 @@ if ($boot) {
     try { $diagnosticsFolderId = Get-Baked $boot "GDRIVE_DIAGNOSTICS_FOLDER_ID" } catch { $diagnosticsFolderId = "" }
     $sheetId  = Get-Baked $boot "GSHEET_ID"
     $client   = Get-Baked $boot "CLIENT_NAME"
+    $publicKeyBytes = $null
+    if ($publicKeyB64) {
+        $publicKeyBytes = [Convert]::FromBase64String($publicKeyB64)
+    }
 
     $provision = [pscustomobject]@{
         CredentialsBytes = [Convert]::FromBase64String($credsB64)
         KeyBytes = [Convert]::FromBase64String($keyB64)
+        PublicKeyBytes = $publicKeyBytes
         FolderId = $folderId
         UploadFolderId = $uploadFolderId
         HeartbeatFolderId = $heartbeatFolderId
@@ -428,12 +435,25 @@ if (-not $isUpgrade) {
 }
 
 if ($provision) {
+    $dataY = $dataDir -replace '\\','/'
     Write-ManagedBytes (Join-Path $dataDir "credentials.json") $provision.CredentialsBytes $target
-    Write-ManagedBytes (Join-Path $dataDir "encryption.key")  $provision.KeyBytes $target
+    if ($provision.PublicKeyBytes) {
+        Write-ManagedBytes (Join-Path $dataDir "encryption_public_key.pem") $provision.PublicKeyBytes $target
+        $legacyKey = Join-Path $dataDir "encryption.key"
+        if (Test-Path -LiteralPath $legacyKey) {
+            Repair-TargetPathAccess $legacyKey $target
+            Remove-Item -LiteralPath $legacyKey -Force -ErrorAction SilentlyContinue
+        }
+        $encKeyFile = ""
+        $encPublicKeyFile = "$dataY/encryption_public_key.pem"
+    } else {
+        Write-ManagedBytes (Join-Path $dataDir "encryption.key") $provision.KeyBytes $target
+        $encKeyFile = "$dataY/encryption.key"
+        $encPublicKeyFile = ""
+    }
 
     $employee = $target.Sam
     $computer = $env:COMPUTERNAME
-    $dataY = $dataDir -replace '\\','/'
     $config = @"
 client_name: "$($provision.Client)"
 employee_name: "$employee"
@@ -455,7 +475,8 @@ google_drive:
   allow_public_links: false
 
 encryption:
-  key_file: "$dataY/encryption.key"
+  key_file: "$encKeyFile"
+  public_key_file: "$encPublicKeyFile"
 
 analysis:
   enabled: false

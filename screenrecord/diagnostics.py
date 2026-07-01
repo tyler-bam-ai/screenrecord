@@ -388,6 +388,7 @@ def _redacted_config_text(config: Dict[str, Any]) -> str:
             redacted["google_sheets"]["sheet_id"] = "<set>"
         if "encryption" in redacted:
             redacted["encryption"]["key_file"] = "<redacted path>"
+            redacted["encryption"]["public_key_file"] = "<redacted path>"
         return yaml.safe_dump(redacted, sort_keys=False, allow_unicode=True)
     except Exception:
         return "<could not render redacted config>\n"

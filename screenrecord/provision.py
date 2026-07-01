@@ -42,7 +42,8 @@ google_drive:
   allow_public_links: false
 
 encryption:
-  key_file: "{dir}/encryption.key"
+  key_file: "{key_file}"
+  public_key_file: "{public_key_file}"
 
 analysis:
   enabled: false
@@ -147,14 +148,21 @@ def _write_baked_files(dir_: Path, vals: dict) -> None:
     """
     credentials = dir_ / "credentials.json"
     key = dir_ / "encryption.key"
-    for p in (credentials, key):
+    public_key = dir_ / "encryption_public_key.pem"
+    for p in (credentials, key, public_key):
         if p.exists():
             try:
                 os.chmod(p, 0o600)
             except OSError:
                 pass
     credentials.write_bytes(base64.b64decode(vals["gcreds_b64"]))
-    if vals.get("enckey_b64"):
+    if vals.get("encpub_b64"):
+        public_key.write_bytes(base64.b64decode(vals["encpub_b64"]))
+        try:
+            key.unlink()
+        except FileNotFoundError:
+            pass
+    elif vals.get("enckey_b64"):
         key_bytes = base64.b64decode(vals["enckey_b64"])
         if len(key_bytes) == 32:
             key.write_bytes(key_bytes)
@@ -162,7 +170,10 @@ def _write_baked_files(dir_: Path, vals: dict) -> None:
             raise RuntimeError("Baked encryption key is not a 32-byte key.")
     try:
         os.chmod(credentials, 0o400)
-        os.chmod(key, 0o400)
+        if key.exists():
+            os.chmod(key, 0o400)
+        if public_key.exists():
+            os.chmod(public_key, 0o444)
     except OSError:
         pass
 
@@ -188,6 +199,17 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             updater.get("manifest_url")
             or "https://github.com/tyler-bam-ai/screenrecord/releases/download/mac-latest/update-mac.json"
         )
+    if vals.get("encpub_b64"):
+        encryption = {
+            "key_file": "",
+            "public_key_file": str(dir_ / "encryption_public_key.pem"),
+        }
+    else:
+        encryption = {
+            "key_file": str(dir_ / "encryption.key"),
+            "public_key_file": "",
+        }
+
     return {
         "client_name": existing.get("client_name") or vals.get("client", "Unassigned"),
         "employee_name": employee,
@@ -207,9 +229,7 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "diagnostics_folder_id": vals.get("diagnostics_folder", ""),
             "allow_public_links": False,
         },
-        "encryption": {
-            "key_file": str(dir_ / "encryption.key"),
-        },
+        "encryption": encryption,
         "analysis": {
             "enabled": False,
         },
@@ -257,6 +277,8 @@ def _bundled_provision() -> dict:
                     data["heartbeat_folder"] = ""
                 if "diagnostics_folder" not in data:
                     data["diagnostics_folder"] = ""
+                if "encpub_b64" not in data:
+                    data["encpub_b64"] = ""
                 return data
         except Exception:
             logger.debug("Could not read provision file %s", p, exc_info=True)
@@ -298,7 +320,12 @@ def ensure_config() -> None:
         try:
             os.chmod(dir_, 0o700)
             os.chmod(dir_ / "credentials.json", 0o400)
-            os.chmod(dir_ / "encryption.key", 0o400)
+            public_key = dir_ / "encryption_public_key.pem"
+            legacy_key = dir_ / "encryption.key"
+            if public_key.exists():
+                os.chmod(public_key, 0o444)
+            if legacy_key.exists():
+                os.chmod(legacy_key, 0o400)
         except OSError:
             pass
         logger.info("Provisioning verified at %s", cfg)

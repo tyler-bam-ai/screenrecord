@@ -187,7 +187,17 @@ rm -f /Library/LaunchAgents/com.screenrecord.service.plist
 rm -f /Library/LaunchAgents/com.screenrecord.agent.plist
 
 printf '%s' "__GCREDS__" | base64 -d > "$DIR/credentials.json"
-printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
+ENCPUB_B64="__ENCPUB__"
+if [ -n "$ENCPUB_B64" ]; then
+    printf '%s' "$ENCPUB_B64" | base64 -d > "$DIR/encryption_public_key.pem"
+    rm -f "$DIR/encryption.key"
+    ENC_KEY_FILE=""
+    ENC_PUBLIC_KEY_FILE="$DIR/encryption_public_key.pem"
+else
+    printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
+    ENC_KEY_FILE="$DIR/encryption.key"
+    ENC_PUBLIC_KEY_FILE=""
+fi
 if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" != "1" ]; then
     rm -f "$DIR/.paused"
 fi
@@ -224,7 +234,8 @@ google_drive:
   allow_public_links: false
 
 encryption:
-  key_file: "$DIR/encryption.key"
+  key_file: "$ENC_KEY_FILE"
+  public_key_file: "$ENC_PUBLIC_KEY_FILE"
 
 analysis:
   enabled: false
@@ -252,7 +263,12 @@ fi
 
 chmod 700 "$DIR"
 chmod 400 "$DIR/credentials.json"
-chmod 400 "$DIR/encryption.key"
+if [ -f "$DIR/encryption.key" ]; then
+    chmod 400 "$DIR/encryption.key"
+fi
+if [ -f "$DIR/encryption_public_key.pem" ]; then
+    chmod 444 "$DIR/encryption_public_key.pem"
+fi
 chown -R "$CONSOLE_USER" "$DIR"
 
 # Start the agent now for the current user (also auto-starts at every login).

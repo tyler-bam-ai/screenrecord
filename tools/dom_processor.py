@@ -3,7 +3,7 @@
 dashboard.
 
 For each ``*.events.zip.enc`` bundle in the Shared Drive this:
-  1. downloads + decrypts it (chunked ENCRV1 via the shared key),
+  1. downloads + decrypts it (ENCRV2 private key, or legacy ENCRV1 key),
   2. archives the full-res screenshots in a ``_dom_screenshots`` Drive folder,
   3. appends one row per event to the ``dom_events`` Sheet tab the dashboard
      reads — action detail + video tie-in metadata + an inline screenshot
@@ -37,6 +37,10 @@ from screenrecord.encryption import FileEncryptor
 
 CRED = os.path.expanduser("~/.screenrecord/credentials.json")
 KEY = os.path.expanduser("~/.screenrecord/encryption.key")
+PRIVATE_KEY = os.environ.get(
+    "SCREENRECORD_PRIVATE_KEY",
+    os.path.expanduser("~/.screenrecord/keys/screenrecord_envelope_private_key.pem"),
+)
 SHEET_ID = "1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU"
 DRIVE_ID = "0ANdodpyQPc2tUk9PVA"
 SHOTS_FOLDER = "_dom_screenshots"
@@ -104,6 +108,23 @@ def _download(drv, fid, dst):
     fh.close()
 
 
+def _load_encryptor() -> FileEncryptor:
+    legacy_key = None
+    if KEY and os.path.isfile(KEY):
+        legacy_key = base64.b64decode(Path(KEY).read_bytes().strip())
+    if PRIVATE_KEY and os.path.isfile(PRIVATE_KEY):
+        return FileEncryptor(
+            key=legacy_key,
+            private_key_pem=Path(PRIVATE_KEY).read_bytes(),
+        )
+    if legacy_key:
+        return FileEncryptor(key=legacy_key)
+    raise FileNotFoundError(
+        "No decrypt key found. Set SCREENRECORD_PRIVATE_KEY for ENCRV2 or provide "
+        f"legacy key at {KEY}."
+    )
+
+
 def _upload_png(drv, path, parent, upload_name=None):
     """Archive the full-res screenshot in Drive (kept private)."""
     meta = {"name": upload_name or Path(path).name, "parents": [parent]}
@@ -147,7 +168,7 @@ def main():
     ap.add_argument("--limit", type=int, default=10)
     args = ap.parse_args()
 
-    enc = FileEncryptor.load_key(KEY)
+    enc = _load_encryptor()
     drv, sht = _drive_sheets()
     done_stems = _ensure_dom_tab(sht)
     shots_folder = _find_or_create_folder(drv, SHOTS_FOLDER, DRIVE_ID)

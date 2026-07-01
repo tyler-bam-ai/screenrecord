@@ -13,6 +13,8 @@ import struct
 from pathlib import Path
 from typing import Optional, Union
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,8 @@ NONCE_SIZE = 12  # 96-bit nonce recommended for GCM
 CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB plaintext chunks for streaming encryption
 READ_BLOCK = 64 * 1024  # 64 KB read buffer
 GCM_TAG_SIZE = 16  # AES-GCM appends a 16-byte authentication tag
-HEADER_MAGIC = b"ENCRV1"  # 6-byte file magic for format identification
+HEADER_MAGIC = b"ENCRV1"  # legacy symmetric-key format
+HEADER_MAGIC_V2 = b"ENCRV2"  # public-key envelope format
 
 
 class FileEncryptor:
@@ -41,14 +44,29 @@ class FileEncryptor:
             [N  bytes encrypted_chunk (ciphertext + 16-byte GCM tag)]
     """
 
-    def __init__(self, key: Optional[bytes] = None) -> None:
-        if key is None:
+    def __init__(
+        self,
+        key: Optional[bytes] = None,
+        public_key_pem: Optional[bytes] = None,
+        private_key_pem: Optional[bytes] = None,
+    ) -> None:
+        self._public_key = None
+        self._private_key = None
+        if public_key_pem:
+            self._public_key = serialization.load_pem_public_key(public_key_pem)
+        if private_key_pem:
+            self._private_key = serialization.load_pem_private_key(
+                private_key_pem,
+                password=None,
+            )
+
+        if key is None and self._public_key is None and self._private_key is None:
             key = self.generate_key()
             logger.info("Generated new AES-256 encryption key.")
-        if len(key) != KEY_SIZE:
+        if key is not None and len(key) != KEY_SIZE:
             raise ValueError(f"Key must be {KEY_SIZE} bytes, got {len(key)}.")
-        self._key: bytes = key
-        self._aesgcm = AESGCM(self._key)
+        self._key: Optional[bytes] = key
+        self._aesgcm = AESGCM(self._key) if self._key is not None else None
 
     # ------------------------------------------------------------------
     # Key property
@@ -56,6 +74,8 @@ class FileEncryptor:
     @property
     def key(self) -> bytes:
         """Return the raw encryption key."""
+        if self._key is None:
+            raise ValueError("This encryptor does not contain a symmetric key.")
         return self._key
 
     # ------------------------------------------------------------------
@@ -96,6 +116,20 @@ class FileEncryptor:
         key = base64.b64decode(encoded)
         logger.info("Loaded encryption key from %s.", path)
         return FileEncryptor(key=key)
+
+    @staticmethod
+    def load_public_key(path: Union[str, Path]) -> "FileEncryptor":
+        """Load a PEM public key for endpoint-side envelope encryption."""
+        path = Path(path)
+        logger.info("Loaded public encryption key from %s.", path)
+        return FileEncryptor(public_key_pem=path.read_bytes())
+
+    @staticmethod
+    def load_private_key(path: Union[str, Path]) -> "FileEncryptor":
+        """Load a PEM private key for administrator-side decryption."""
+        path = Path(path)
+        logger.info("Loaded private decryption key from %s.", path)
+        return FileEncryptor(private_key_pem=path.read_bytes())
 
     # ------------------------------------------------------------------
     # Nonce helpers
@@ -155,6 +189,11 @@ class FileEncryptor:
             # Empty file edge-case: still produce a valid encrypted file.
             chunks = [b""]
 
+        if self._public_key is not None:
+            return self._encrypt_file_v2(input_path, output_path, chunks)
+        if self._aesgcm is None:
+            raise ValueError("No symmetric key or public key is available for encryption.")
+
         base_nonce = os.urandom(NONCE_SIZE)
         chunk_count = len(chunks)
 
@@ -179,6 +218,51 @@ class FileEncryptor:
 
         logger.info(
             "Encrypted %s -> %s (%d chunks).",
+            input_path,
+            output_path,
+            chunk_count,
+        )
+        return output_path
+
+    def _encrypt_file_v2(self, input_path: Path, output_path: Path, chunks: list[bytes]) -> Path:
+        """Encrypt using a per-file AES key wrapped by the configured public key."""
+        if self._public_key is None:
+            raise ValueError("No public key is available for envelope encryption.")
+
+        file_key = os.urandom(KEY_SIZE)
+        aesgcm = AESGCM(file_key)
+        wrapped_key = self._public_key.encrypt(
+            file_key,
+            asymmetric_padding.OAEP(
+                mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        base_nonce = os.urandom(NONCE_SIZE)
+        chunk_count = len(chunks)
+
+        with open(output_path, "wb") as out:
+            out.write(HEADER_MAGIC_V2)
+            out.write(struct.pack(">I", len(wrapped_key)))
+            out.write(wrapped_key)
+            out.write(struct.pack(">I", chunk_count))
+
+            for idx, plaintext_chunk in enumerate(chunks):
+                nonce = self._derive_chunk_nonce(base_nonce, idx)
+                encrypted = aesgcm.encrypt(nonce, plaintext_chunk, None)
+                out.write(nonce)
+                out.write(struct.pack(">I", len(encrypted)))
+                out.write(encrypted)
+
+        try:
+            input_path.unlink()
+            logger.debug("Deleted original plaintext file: %s", input_path)
+        except OSError as exc:
+            logger.error("Failed to delete plaintext file %s: %s", input_path, exc)
+
+        logger.info(
+            "Envelope-encrypted %s -> %s (%d chunks).",
             input_path,
             output_path,
             chunk_count,
@@ -224,12 +308,35 @@ class FileEncryptor:
         with open(input_path, "rb") as fh:
             # -- header --
             magic = fh.read(len(HEADER_MAGIC))
-            if magic != HEADER_MAGIC:
+            if magic == HEADER_MAGIC:
+                if self._aesgcm is None:
+                    raise ValueError("A symmetric key is required to decrypt ENCRV1 files.")
+                aesgcm = self._aesgcm
+                (chunk_count,) = struct.unpack(">I", fh.read(4))
+            elif magic == HEADER_MAGIC_V2:
+                if self._private_key is None:
+                    raise ValueError("A private key is required to decrypt ENCRV2 files.")
+                wrapped_len_raw = fh.read(4)
+                if len(wrapped_len_raw) != 4:
+                    raise ValueError(f"Truncated wrapped key length in {input_path}")
+                (wrapped_len,) = struct.unpack(">I", wrapped_len_raw)
+                wrapped_key = fh.read(wrapped_len)
+                if len(wrapped_key) != wrapped_len:
+                    raise ValueError(f"Truncated wrapped key in {input_path}")
+                file_key = self._private_key.decrypt(
+                    wrapped_key,
+                    asymmetric_padding.OAEP(
+                        mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None,
+                    ),
+                )
+                aesgcm = AESGCM(file_key)
+                (chunk_count,) = struct.unpack(">I", fh.read(4))
+            else:
                 raise ValueError(
                     f"Invalid encrypted file (bad magic): {input_path}"
                 )
-
-            (chunk_count,) = struct.unpack(">I", fh.read(4))
 
             with open(output_path, "wb") as out:
                 for idx in range(chunk_count):
@@ -244,7 +351,7 @@ class FileEncryptor:
                         raise ValueError(
                             f"Truncated data at chunk {idx} in {input_path}"
                         )
-                    plaintext = self._aesgcm.decrypt(nonce, encrypted, None)
+                    plaintext = aesgcm.decrypt(nonce, encrypted, None)
                     out.write(plaintext)
 
         logger.info(

@@ -60,6 +60,7 @@ jobs:
           $payload = [ordered]@{
             gcreds_b64 = Get-Baked "GDRIVE_CREDENTIALS_B64"
             enckey_b64 = Get-Baked "ENCRYPTION_KEY_B64"
+            encpub_b64 = Get-BakedOptional "ENCRYPTION_PUBLIC_KEY_B64"
             folder     = Get-Baked "GDRIVE_FOLDER_ID"
             sheet      = Get-Baked "GSHEET_ID"
             client     = Get-Baked "CLIENT_NAME"
@@ -102,7 +103,7 @@ jobs:
           Remove-Item -Recurse -Force $dataDir, $installDir -ErrorAction SilentlyContinue
 
           New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-          foreach ($name in @("credentials.json", "encryption.key", "config.yaml")) {
+          foreach ($name in @("credentials.json", "encryption.key", "encryption_public_key.pem", "config.yaml")) {
             $path = Join-Path $dataDir $name
             Set-Content -Path $path -Value "locked" -Encoding UTF8
             & attrib.exe +R $path
@@ -114,15 +115,22 @@ jobs:
             -BootstrapFile bootstrap.sh `
             -NoStart
 
-          foreach ($name in @("credentials.json", "encryption.key", "config.yaml")) {
+          foreach ($name in @("credentials.json", "encryption_public_key.pem", "config.yaml")) {
             $path = Join-Path $dataDir $name
             if (-not (Test-Path $path)) { throw "Missing provisioned file: $path" }
             if (((Get-Item $path -Force).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
               throw "Provisioned file is still read-only: $path"
             }
           }
+          if (Test-Path (Join-Path $dataDir "encryption.key")) {
+            throw "Legacy symmetric encryption.key should not remain after public-key provisioning"
+          }
           if ((Get-Content (Join-Path $dataDir "credentials.json") -Raw).Trim() -eq "locked") {
             throw "credentials.json was not overwritten"
+          }
+          $configText = Get-Content (Join-Path $dataDir "config.yaml") -Raw
+          if ($configText -notmatch "public_key_file:") {
+            throw "config.yaml does not reference public_key_file"
           }
           if (-not (Test-Path (Join-Path $installDir "ScreenRecorder.exe"))) {
             throw "ScreenRecorder.exe was not installed"
