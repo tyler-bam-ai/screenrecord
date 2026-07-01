@@ -79,6 +79,9 @@ jobs:
           Copy-Item install_windows.ps1 out/ -Force
           $version = python -c "from screenrecord.version import WINDOWS_VERSION; print(WINDOWS_VERSION)"
           $sha = (Get-FileHash out/ScreenRecorder.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installer = Get-Content out/install_windows.ps1 -Raw
+          $installer = $installer.Replace("__SCREENRECORDER_EXE_SHA256__", $sha)
+          Set-Content -Path out/install_windows.ps1 -Value $installer -Encoding UTF8
           [ordered]@{
             platform = "windows"
             version = $version

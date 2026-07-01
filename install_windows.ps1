@@ -19,7 +19,7 @@ param(
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh",
     [string]$TargetUser = "",
     [string]$BootstrapFile = "",
-    [string]$ExeSha256 = "",
+    [string]$ExeSha256 = "__SCREENRECORDER_EXE_SHA256__",
     [switch]$NoStart
 )
 
@@ -79,6 +79,14 @@ function Invoke-BestEffort($label, [scriptblock]$action) {
     } catch {
         Info "$label failed: $($_.Exception.Message)"
     }
+}
+
+function Normalize-Sha256($value) {
+    $sha = ([string]$value).Trim()
+    if ($sha -match '^[a-fA-F0-9]{64}$') {
+        return $sha.ToLowerInvariant()
+    }
+    return ""
 }
 
 function Repair-TargetPathAccess($path, $target) {
@@ -174,8 +182,9 @@ function Get-ExpectedExeSha256 {
         return $script:ResolvedExeSha256
     }
 
-    if ($ExeSha256) {
-        $script:ResolvedExeSha256 = $ExeSha256.ToLowerInvariant()
+    $embedded = Normalize-Sha256 $ExeSha256
+    if ($embedded) {
+        $script:ResolvedExeSha256 = $embedded
         return $script:ResolvedExeSha256
     }
 
@@ -183,8 +192,9 @@ function Get-ExpectedExeSha256 {
     if (Test-Path -LiteralPath $localManifest) {
         try {
             $m = Get-Content -LiteralPath $localManifest -Raw | ConvertFrom-Json
-            if ($m.sha256) {
-                $script:ResolvedExeSha256 = ([string]$m.sha256).ToLowerInvariant()
+            $sha = Normalize-Sha256 $m.sha256
+            if ($sha) {
+                $script:ResolvedExeSha256 = $sha
                 return $script:ResolvedExeSha256
             }
         } catch {
@@ -195,13 +205,31 @@ function Get-ExpectedExeSha256 {
     try {
         $manifestUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
         Info "Fetching executable manifest..."
-        $m = Invoke-WebRequest -UseBasicParsing -Uri $manifestUrl | Select-Object -ExpandProperty Content | ConvertFrom-Json
-        if ($m.sha256) {
-            $script:ResolvedExeSha256 = ([string]$m.sha256).ToLowerInvariant()
+        $content = [string](Invoke-WebRequest -UseBasicParsing -Uri $manifestUrl).Content
+        $m = $content.TrimStart([char]0xfeff) | ConvertFrom-Json
+        $sha = Normalize-Sha256 $m.sha256
+        if ($sha) {
+            $script:ResolvedExeSha256 = $sha
             return $script:ResolvedExeSha256
         }
     } catch {
         Info "Could not fetch executable manifest: $($_.Exception.Message)"
+    }
+
+    try {
+        $releaseApi = "https://api.github.com/repos/tyler-bam-ai/screenrecord/releases/tags/windows-latest"
+        Info "Fetching GitHub release asset digest..."
+        $release = ([string](Invoke-WebRequest -UseBasicParsing -Uri $releaseApi).Content).TrimStart([char]0xfeff) | ConvertFrom-Json
+        $asset = $release.assets | Where-Object { $_.name -eq "ScreenRecorder.exe" } | Select-Object -First 1
+        if ($asset -and $asset.digest -match '^sha256:(.+)$') {
+            $sha = Normalize-Sha256 $Matches[1]
+            if ($sha) {
+                $script:ResolvedExeSha256 = $sha
+                return $script:ResolvedExeSha256
+            }
+        }
+    } catch {
+        Info "Could not fetch GitHub release asset digest: $($_.Exception.Message)"
     }
 
     return ""
