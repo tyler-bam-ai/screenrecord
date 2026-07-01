@@ -743,8 +743,8 @@ class ScreenRecordService:
         threading.Thread(target=_run, name="update-now", daemon=True).start()
 
     def _command_poll_loop(self):
-        """Poll Google Sheets for commands and update machine status every 30 seconds."""
-        poll_interval = 30
+        """Poll Google Sheets for commands and update machine status every minute."""
+        poll_interval = 60
         computer_name = self.config.get("computer_name", "Unknown")
         employee_name = self.config.get("employee_name", "Unknown")
         client_name = self.config.get("client_name", "Unknown")

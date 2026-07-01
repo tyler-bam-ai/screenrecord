@@ -26,9 +26,70 @@ param(
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $script:ResolvedExeSha256 = ""
+$script:InstallPhase = "start"
+$script:InstallTarget = $null
+$script:StagedExeSha256 = ""
+$script:StoppedExistingProcesses = $false
+$script:TranscriptPath = Join-Path (Join-Path $env:ProgramData "ScreenRecorder") "install.log"
+
+try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:TranscriptPath) | Out-Null
+    Start-Transcript -Path $script:TranscriptPath -Append | Out-Null
+} catch {
+    Write-Host "[*] Could not start installer transcript: $($_.Exception.Message)"
+}
 
 function Info($m) { Write-Host "[*] $m" }
 function Ok($m)   { Write-Host "[+] $m" -ForegroundColor Green }
+
+function Write-InstallDiagnostic($kind, $errorRecord) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("kind=$kind")
+    $lines.Add("timestamp=$((Get-Date).ToUniversalTime().ToString('o'))")
+    $lines.Add("phase=$script:InstallPhase")
+    $lines.Add("identity=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)")
+    $lines.Add("computer=$env:COMPUTERNAME")
+    $lines.Add("transcript=$script:TranscriptPath")
+    $lines.Add("expected_exe_sha256=$script:ResolvedExeSha256")
+    $lines.Add("staged_exe_sha256=$script:StagedExeSha256")
+    $lines.Add("stopped_existing_processes=$script:StoppedExistingProcesses")
+    if ($script:InstallTarget) {
+        $lines.Add("target_name=$($script:InstallTarget.Name)")
+        $lines.Add("target_sid=$($script:InstallTarget.Sid)")
+        $lines.Add("target_profile=$($script:InstallTarget.Profile)")
+    }
+    if ($errorRecord) {
+        $lines.Add("error=$($errorRecord.Exception.Message)")
+        $lines.Add("position=$($errorRecord.InvocationInfo.PositionMessage)")
+        $lines.Add("category=$($errorRecord.CategoryInfo)")
+        $lines.Add("fully_qualified_error_id=$($errorRecord.FullyQualifiedErrorId)")
+    }
+
+    $text = ($lines -join [Environment]::NewLine) + [Environment]::NewLine
+    $paths = @()
+    $paths += Join-Path (Join-Path $env:ProgramData "ScreenRecorder") "install_diagnostic.txt"
+    if ($env:PUBLIC) {
+        $paths += Join-Path (Join-Path $env:PUBLIC "Documents") "ScreenRecorder_install_diagnostic.txt"
+    }
+    if ($script:InstallTarget -and $script:InstallTarget.Profile) {
+        $paths += Join-Path (Join-Path $script:InstallTarget.Profile ".screenrecord") "install_diagnostic.txt"
+    }
+
+    foreach ($path in $paths) {
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+            Add-Content -LiteralPath $path -Value $text -Encoding UTF8
+        } catch {
+            Write-Host "[*] Could not write install diagnostic to ${path}: $($_.Exception.Message)"
+        }
+    }
+}
+
+trap {
+    Write-InstallDiagnostic "failure" $_
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
 
 function Test-RunningAsSystem {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -252,6 +313,7 @@ function Stage-VerifiedExe($localExe) {
         }
 
         $actual = (Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:StagedExeSha256 = $actual
         if ($actual -ne $expected) {
             throw "ScreenRecorder.exe SHA-256 mismatch. expected=$expected actual=$actual"
         }
@@ -285,6 +347,7 @@ function Install-VerifiedExe($localExe, $exeDest, $target) {
             Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $tmp
         }
         $actual = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:StagedExeSha256 = $actual
         if ($actual -ne $expected) {
             throw "ScreenRecorder.exe SHA-256 mismatch. expected=$expected actual=$actual"
         }
@@ -295,12 +358,16 @@ function Install-VerifiedExe($localExe, $exeDest, $target) {
     }
 }
 
+$script:InstallPhase = "resolve_target"
 $target = Resolve-InstallUser
+$script:InstallTarget = $target
 Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
 $localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
+$script:InstallPhase = "stage_verified_exe"
 $stagedExe = Stage-VerifiedExe $localExe
 
 # --- 1. Fetch and validate deployment values if possible ----------------------
+$script:InstallPhase = "fetch_validate_bootstrap"
 $boot = $null
 $provision = $null
 if ($BootstrapFile) {
@@ -343,11 +410,14 @@ if ($boot) {
 # Stop the existing agent only after the new exe and provisioning inputs have
 # been validated. Older builds can leave config read-only or owned by another
 # context, so the repair/write path still runs after shutdown.
+$script:InstallPhase = "stop_existing_processes"
 Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
 Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
+$script:StoppedExistingProcesses = $true
 Start-Sleep -Seconds 1
 
 # --- 2. Provision the target user's data directory ---------------------------
+$script:InstallPhase = "provision_target_profile"
 $dataDir = Join-Path $target.Profile ".screenrecord"
 $recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
@@ -416,6 +486,7 @@ rag:
 }
 
 # --- 3. Install the executable ------------------------------------------------
+$script:InstallPhase = "install_verified_exe"
 $installDir = Join-Path (Join-Path $target.Profile "AppData\Local") "ScreenRecorder"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $exeDest = Join-Path $installDir "ScreenRecorder.exe"
@@ -436,6 +507,7 @@ try {
 Ok "Installed $exeDest"
 
 # --- 4. Auto-start for the target user ---------------------------------------
+$script:InstallPhase = "register_autostart"
 $hiveLoadedByUs = $false
 try {
     $hiveLoadedByUs = Ensure-UserHiveLoaded $target
@@ -448,6 +520,7 @@ try {
 }
 
 # --- 5. Start now if safe -----------------------------------------------------
+$script:InstallPhase = "start_or_defer"
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($NoStart) {
     Ok "Installed for $($target.Name). Start skipped by -NoStart."
@@ -461,3 +534,6 @@ if ($NoStart) {
 Write-Host ""
 Write-Host "Static exe: $ExeUrl"
 Write-Host "Uninstall for this user: remove HKU\\$($target.Sid)\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ScreenRecordAgent, stop ScreenRecorder, then delete '$installDir' and '$dataDir'."
+$script:InstallPhase = "complete"
+Write-InstallDiagnostic "success" $null
+try { Stop-Transcript | Out-Null } catch {}

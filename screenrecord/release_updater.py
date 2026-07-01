@@ -59,7 +59,11 @@ def read_update_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any
     """Return the most recent updater status for heartbeat/diagnostics."""
     candidates = [_data_dir() / STATUS_FILENAME]
     if sys.platform == "darwin":
-        candidates.insert(0, Path("/Users/Shared/ScreenRecorder_updater_status.json"))
+        candidates = [
+            Path("/Users/Shared/ScreenRecorder/ScreenRecorder_updater_status.json"),
+            Path("/Library/Logs/ScreenRecorder/updater_status.json"),
+            Path("/Users/Shared/ScreenRecorder_updater_status.json"),
+        ] + candidates
     for path in candidates:
         try:
             if path.is_file():

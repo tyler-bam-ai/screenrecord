@@ -86,6 +86,8 @@ class SheetsBackend:
         sheets_cfg = config.get("google_sheets", {})
         self._sheet_id: Optional[str] = sheets_cfg.get("sheet_id") or None
         self._make_public_enabled: bool = bool(sheets_cfg.get("make_public", False))
+        self._machine_cache: Dict[str, Dict[str, Any]] = {}
+        self._machine_cache_ttl_seconds = 600
 
         logger.info("Authenticating with Google Sheets service account.")
         try:
@@ -152,19 +154,24 @@ class SheetsBackend:
         if self._sheet_id is not None:
             # Validate that the sheet is accessible
             try:
-                self._sheets_service.spreadsheets().get(
-                    spreadsheetId=self._sheet_id
-                ).execute()
+                self._execute_with_retry(
+                    lambda: self._sheets_service.spreadsheets().get(
+                        spreadsheetId=self._sheet_id
+                    ),
+                    f"Validate configured sheet '{self._sheet_id}'",
+                )
                 logger.info(
                     "Using existing Google Sheet: %s", self._sheet_id
                 )
                 return self._sheet_id
             except HttpError:
-                logger.warning(
-                    "Configured sheet_id '%s' is not accessible; "
-                    "creating a new sheet.",
+                logger.exception(
+                    "Configured sheet_id '%s' is not accessible. Refusing to "
+                    "create a replacement dashboard because that would split "
+                    "machine status and commands across sheets.",
                     self._sheet_id,
                 )
+                raise
 
         return self._create_sheet()
 
@@ -237,13 +244,16 @@ class SheetsBackend:
             },
         ]
         try:
-            self._sheets_service.spreadsheets().values().batchUpdate(
-                spreadsheetId=self._sheet_id,
-                body={
-                    "valueInputOption": "RAW",
-                    "data": data,
-                },
-            ).execute()
+            self._execute_with_retry(
+                lambda: self._sheets_service.spreadsheets().values().batchUpdate(
+                    spreadsheetId=self._sheet_id,
+                    body={
+                        "valueInputOption": "RAW",
+                        "data": data,
+                    },
+                ),
+                "Write sheet headers",
+            )
             logger.info("Header rows written to all tabs.")
         except HttpError:
             logger.exception("Failed to write header rows.")
@@ -294,30 +304,53 @@ class SheetsBackend:
             uptime_hours: Hours of uptime since the service started.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
-
-        try:
-            result = (
-                self._sheets_service.spreadsheets()
-                .values()
-                .get(
-                    spreadsheetId=self._sheet_id,
-                    range=f"{TAB_MACHINES}!A:A",
-                )
-                .execute()
-            )
-            values = result.get("values", [])
-        except HttpError:
-            logger.exception("Failed to read Machines tab.")
-            return
-
-        # Find existing row (skip header at index 0)
         row_index: Optional[int] = None
-        for idx, row in enumerate(values):
-            if idx == 0:
-                continue
-            if row and row[0] == computer_name:
-                row_index = idx
-                break
+        existing_employee = ""
+        existing_client = ""
+        installed_at = ""
+        now_ts = time.time()
+        cache = self._machine_cache.get(computer_name)
+        if cache and now_ts - float(cache.get("refreshed_at", 0)) < self._machine_cache_ttl_seconds:
+            row_index = int(cache.get("row_index", 0))
+            existing_employee = str(cache.get("employee_name") or "")
+            existing_client = str(cache.get("client_name") or "")
+            installed_at = str(cache.get("installed_at") or "")
+        else:
+            try:
+                result = self._execute_with_retry(
+                    lambda: self._sheets_service.spreadsheets()
+                    .values()
+                    .get(
+                        spreadsheetId=self._sheet_id,
+                        range=f"{TAB_MACHINES}!A:I",
+                    ),
+                    "Read Machines tab",
+                )
+                values = result.get("values", [])
+            except HttpError:
+                logger.exception("Failed to read Machines tab.")
+                return
+
+            # Find existing row (skip header at index 0)
+            for idx, row in enumerate(values):
+                if idx == 0:
+                    continue
+                if row and row[0] == computer_name:
+                    row_index = idx
+                    if len(row) >= 2 and row[1]:
+                        existing_employee = row[1]
+                    if len(row) >= 3 and row[2]:
+                        existing_client = row[2]
+                    if len(row) >= 8:
+                        installed_at = row[7]
+                    self._machine_cache[computer_name] = {
+                        "row_index": row_index,
+                        "employee_name": existing_employee,
+                        "client_name": existing_client,
+                        "installed_at": installed_at,
+                        "refreshed_at": now_ts,
+                    }
+                    break
 
         if row_index is not None:
             # Update existing row. Preserve installed_at, and treat client_name +
@@ -325,29 +358,6 @@ class SheetsBackend:
             # sheet so a manual edit from the dashboard sticks (the agent only
             # provides the initial value on first insert). The agent still owns
             # status / heartbeat / segments / uptime.
-            installed_at = ""
-            existing_client = ""
-            existing_employee = ""
-            try:
-                existing = (
-                    self._sheets_service.spreadsheets()
-                    .values()
-                    .get(
-                        spreadsheetId=self._sheet_id,
-                        range=f"{TAB_MACHINES}!A{row_index + 1}:H{row_index + 1}",
-                    )
-                    .execute()
-                )
-                row0 = (existing.get("values") or [[]])[0]
-                if len(row0) >= 2 and row0[1]:
-                    existing_employee = row0[1]
-                if len(row0) >= 3 and row0[2]:
-                    existing_client = row0[2]
-                if len(row0) >= 8:
-                    installed_at = row0[7]
-            except HttpError:
-                logger.warning("Could not read existing machine row.")
-
             row_data = [
                 computer_name,
                 existing_employee or employee_name,
@@ -361,18 +371,22 @@ class SheetsBackend:
             ]
             cell_range = f"{TAB_MACHINES}!A{row_index + 1}:I{row_index + 1}"
             try:
-                self._sheets_service.spreadsheets().values().update(
-                    spreadsheetId=self._sheet_id,
-                    range=cell_range,
-                    valueInputOption="RAW",
-                    body={"values": [row_data]},
-                ).execute()
+                self._execute_with_retry(
+                    lambda: self._sheets_service.spreadsheets().values().update(
+                        spreadsheetId=self._sheet_id,
+                        range=cell_range,
+                        valueInputOption="RAW",
+                        body={"values": [row_data]},
+                    ),
+                    f"Update machine row for '{computer_name}'",
+                )
                 logger.debug(
                     "Updated machine row for '%s' at row %d.",
                     computer_name,
                     row_index + 1,
                 )
             except HttpError:
+                self._machine_cache.pop(computer_name, None)
                 logger.exception(
                     "Failed to update machine row for '%s'.", computer_name
                 )
@@ -390,13 +404,17 @@ class SheetsBackend:
                 permissions,
             ]
             try:
-                self._sheets_service.spreadsheets().values().append(
-                    spreadsheetId=self._sheet_id,
-                    range=f"{TAB_MACHINES}!A:I",
-                    valueInputOption="RAW",
-                    insertDataOption="INSERT_ROWS",
-                    body={"values": [row_data]},
-                ).execute()
+                self._execute_with_retry(
+                    lambda: self._sheets_service.spreadsheets().values().append(
+                        spreadsheetId=self._sheet_id,
+                        range=f"{TAB_MACHINES}!A:I",
+                        valueInputOption="RAW",
+                        insertDataOption="INSERT_ROWS",
+                        body={"values": [row_data]},
+                    ),
+                    f"Append machine row for '{computer_name}'",
+                )
+                self._machine_cache.pop(computer_name, None)
                 logger.info(
                     "Appended new machine row for '%s'.", computer_name
                 )
@@ -481,14 +499,14 @@ class SheetsBackend:
             ``timestamp``, ``command``, and ``status``.
         """
         try:
-            result = (
-                self._sheets_service.spreadsheets()
+            result = self._execute_with_retry(
+                lambda: self._sheets_service.spreadsheets()
                 .values()
                 .get(
                     spreadsheetId=self._sheet_id,
                     range=f"{TAB_COMMANDS}!A:E",
-                )
-                .execute()
+                ),
+                "Read Commands tab",
             )
             values = result.get("values", [])
         except HttpError:
@@ -535,12 +553,15 @@ class SheetsBackend:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         try:
-            self._sheets_service.spreadsheets().values().update(
-                spreadsheetId=self._sheet_id,
-                range=f"{TAB_COMMANDS}!D{row_number}:E{row_number}",
-                valueInputOption="RAW",
-                body={"values": [["executed", now_iso]]},
-            ).execute()
+            self._execute_with_retry(
+                lambda: self._sheets_service.spreadsheets().values().update(
+                    spreadsheetId=self._sheet_id,
+                    range=f"{TAB_COMMANDS}!D{row_number}:E{row_number}",
+                    valueInputOption="RAW",
+                    body={"values": [["executed", now_iso]]},
+                ),
+                f"Mark command row {row_number} executed",
+            )
             logger.info(
                 "Marked command at row %d as executed.", row_number
             )
