@@ -44,8 +44,17 @@ jobs:
         run: |
           $boot = Get-Content bootstrap.sh -Raw
           function Get-Baked($name) {
+            $envValue = [Environment]::GetEnvironmentVariable($name)
+            if ($envValue) { return $envValue }
             $m = [regex]::Match($boot, "(?m)^$name=`"([^`"]*)`"")
             if (-not $m.Success) { throw "Could not find $name in bootstrap.sh" }
+            return $m.Groups[1].Value
+          }
+          function Get-BakedOptional($name) {
+            $envValue = [Environment]::GetEnvironmentVariable($name)
+            if ($envValue) { return $envValue }
+            $m = [regex]::Match($boot, "(?m)^$name=`"([^`"]*)`"")
+            if (-not $m.Success) { return "" }
             return $m.Groups[1].Value
           }
           $payload = [ordered]@{
@@ -54,6 +63,7 @@ jobs:
             folder     = Get-Baked "GDRIVE_FOLDER_ID"
             sheet      = Get-Baked "GSHEET_ID"
             client     = Get-Baked "CLIENT_NAME"
+            upload_folder = Get-BakedOptional "GDRIVE_UPLOAD_FOLDER_ID"
           } | ConvertTo-Json -Compress
           Set-Content -Path build_app/_provision.json -Value $payload -Encoding UTF8
           if (-not (Test-Path build_app/_provision.json)) { throw "Failed to write build_app/_provision.json" }
@@ -67,6 +77,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item dist_win/ScreenRecorder.exe out/ -Force
           Copy-Item install_windows.ps1 out/ -Force
+          $version = python -c "from screenrecord.version import WINDOWS_VERSION; print(WINDOWS_VERSION)"
+          $sha = (Get-FileHash out/ScreenRecorder.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            platform = "windows"
+            version = $version
+            url = "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/ScreenRecorder.exe"
+            sha256 = $sha
+            force = $false
+          } | ConvertTo-Json | Set-Content -Path out/update-windows.json -Encoding UTF8
           Write-Host "ScreenRecorder.exe size: $([math]::Round((Get-Item out/ScreenRecorder.exe).Length/1MB,1)) MB"
 
       - name: Self-test Windows installer repair path
@@ -117,6 +136,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create $env:GITHUB_REF_NAME `
-            out/ScreenRecorder.exe out/install_windows.ps1 `
+            out/ScreenRecorder.exe out/install_windows.ps1 out/update-windows.json `
             --title "Screen Recorder for Windows $env:GITHUB_REF_NAME" `
             --notes "Unsigned Windows build (gdigrab capture, per-user Run key auto-start). Install with install_windows.ps1."
+
+      - name: Publish static latest release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/win-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view windows-latest 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create windows-latest --title "Screen Recorder for Windows — latest (stable link)" --notes "Stable Windows installer link."
+          }
+          gh release upload windows-latest `
+            out/ScreenRecorder.exe out/install_windows.ps1 out/update-windows.json `
+            --clobber

@@ -1,0 +1,30 @@
+#!/bin/bash
+# Runs as root before pkg payload extraction. Stops the existing recorder so the
+# app bundle is not replaced while its old executable/resources are still live.
+set -u
+
+LOG="/var/tmp/ai.bam.screenrecord.preinstall.log"
+exec >>"$LOG" 2>&1
+echo "==== ScreenRecorder preinstall $(date -u '+%Y-%m-%dT%H:%M:%SZ') ===="
+
+CONSOLE_USER=$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/{print $3}')
+[ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "loginwindow" ] && CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" != "loginwindow" ]; then
+    UID_N=$(id -u "$CONSOLE_USER" 2>/dev/null || true)
+    if [ -n "${UID_N:-}" ]; then
+        launchctl bootout "gui/$UID_N/ai.bam.screenrecord" 2>/dev/null || true
+    fi
+fi
+
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if ! pgrep -f "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord" >/dev/null 2>&1; then
+        echo "Existing recorder processes stopped."
+        exit 0
+    fi
+    echo "Waiting for recorder processes to stop (attempt $attempt)."
+    sleep 1
+done
+
+pkill -f "ScreenRecorder.app/Contents/MacOS/ScreenRecorder|launch_screenrecorder.sh|ffmpeg.*screenrecord" 2>/dev/null || true
+sleep 2
+exit 0

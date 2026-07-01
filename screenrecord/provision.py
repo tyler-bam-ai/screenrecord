@@ -36,12 +36,25 @@ recording:
 google_drive:
   credentials_file: "{dir}/credentials.json"
   root_folder_id: "{folder}"
+  upload_folder_id: "{upload_folder}"
 
 encryption:
   key_file: "{dir}/encryption.key"
 
 analysis:
   enabled: false
+
+input_monitor:
+  enabled: true
+  capture_keystroke_text: true
+  screenshot_min_interval: 0.0
+  keyboard_screenshot_debounce_sec: 1.0
+  keyboard_text_max_chars: 160
+
+updater:
+  enabled: true
+  check_interval_seconds: 3600
+  manifest_url: "{manifest_url}"
 
 google_sheets:
   sheet_id: "{sheet}"
@@ -160,6 +173,17 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
         computer = _detected_computer()
 
     rec = existing.get("recording") if isinstance(existing.get("recording"), dict) else {}
+    updater = existing.get("updater") if isinstance(existing.get("updater"), dict) else {}
+    if sys.platform == "win32":
+        manifest_url = (
+            updater.get("manifest_url")
+            or "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
+        )
+    else:
+        manifest_url = (
+            updater.get("manifest_url")
+            or "https://github.com/tyler-bam-ai/screenrecord/releases/download/mac-latest/update-mac.json"
+        )
     return {
         "client_name": existing.get("client_name") or vals.get("client", "Unassigned"),
         "employee_name": employee,
@@ -174,6 +198,7 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
         "google_drive": {
             "credentials_file": str(dir_ / "credentials.json"),
             "root_folder_id": vals.get("folder", ""),
+            "upload_folder_id": vals.get("upload_folder", ""),
         },
         "encryption": {
             "key_file": str(dir_ / "encryption.key"),
@@ -187,6 +212,11 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "screenshot_min_interval": 0.0,
             "keyboard_screenshot_debounce_sec": 1.0,
             "keyboard_text_max_chars": 160,
+        },
+        "updater": {
+            "enabled": updater.get("enabled", True),
+            "check_interval_seconds": updater.get("check_interval_seconds", 3600),
+            "manifest_url": manifest_url,
         },
         "google_sheets": {
             "sheet_id": vals.get("sheet", ""),
@@ -212,7 +242,10 @@ def _bundled_provision() -> dict:
     for p in candidates:
         try:
             if p.is_file():
-                return json.loads(p.read_text(encoding="utf-8"))
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if "upload_folder" not in data:
+                    data["upload_folder"] = ""
+                return data
         except Exception:
             logger.debug("Could not read provision file %s", p, exc_info=True)
     return {}

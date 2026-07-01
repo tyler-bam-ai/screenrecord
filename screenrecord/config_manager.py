@@ -29,6 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "google_drive": {
         "credentials_file": "credentials.json",
         "root_folder_id": "",
+        "upload_folder_id": "",
     },
     "encryption": {
         "key_file": "",
@@ -45,6 +46,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "screenshot_min_interval": 0.0,
         "keyboard_screenshot_debounce_sec": 1.0,
         "keyboard_text_max_chars": 160,
+    },
+    "updater": {
+        "enabled": True,
+        "check_interval_seconds": 3600,
+        "manifest_url": "",
     },
     "rag": {
         "enabled": False,

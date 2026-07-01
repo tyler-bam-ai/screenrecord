@@ -33,13 +33,23 @@ echo "Signing identity: $IDENTITY  (Team $TEAM_ID)"
 #    on first login — covers MDM installs where the postinstall's console-user
 #    detection fails and no config gets written. Single source of truth: bootstrap.sh.
 echo "==> Baking provisioning values from bootstrap.sh..."
-val() { grep -m1 "^$1=" ../bootstrap.sh | cut -d'"' -f2; }
+val() {
+    # Allow per-client release builds without editing bootstrap.sh:
+    #   GDRIVE_CREDENTIALS_B64=... ENCRYPTION_KEY_B64=... CLIENT_NAME=... ./build_app.sh
+    eval "ENV_VAL=\${$1:-}"
+    if [ -n "${ENV_VAL:-}" ]; then
+        printf '%s' "$ENV_VAL"
+    else
+        (grep -m1 "^$1=" ../bootstrap.sh || true) | cut -d'"' -f2
+    fi
+}
 python3 - "$(val GDRIVE_CREDENTIALS_B64)" "$(val ENCRYPTION_KEY_B64)" \
-         "$(val GDRIVE_FOLDER_ID)" "$(val GSHEET_ID)" "$(val CLIENT_NAME)" <<'PY'
+         "$(val GDRIVE_FOLDER_ID)" "$(val GSHEET_ID)" "$(val CLIENT_NAME)" \
+         "$(val GDRIVE_UPLOAD_FOLDER_ID)" <<'PY'
 import json, sys
-g, e, f, s, c = sys.argv[1:6]
+g, e, f, s, c, u = sys.argv[1:7]
 assert g and s, "missing baked values from bootstrap.sh"
-json.dump({"gcreds_b64": g, "enckey_b64": e, "folder": f, "sheet": s, "client": c},
+json.dump({"gcreds_b64": g, "enckey_b64": e, "folder": f, "sheet": s, "client": c, "upload_folder": u},
           open("_provision.json", "w"))
 PY
 [ -s _provision.json ] || { echo "ERROR: failed to bake _provision.json"; exit 1; }

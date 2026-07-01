@@ -13,9 +13,22 @@ from pathlib import Path
 from typing import Any
 
 
+def _ensure_stdio() -> None:
+    """Windowed PyInstaller apps on Windows can have missing stdio streams."""
+    if os.name != "nt":
+        return
+    for name, mode in (("stdin", "r"), ("stdout", "a"), ("stderr", "a")):
+        if getattr(sys, name, None) is None:
+            try:
+                setattr(sys, name, open(os.devnull, mode, encoding="utf-8"))
+            except Exception:
+                pass
+
+
 def _setup_bundle_env() -> None:
     if not getattr(sys, "frozen", False):
         return
+    _ensure_stdio()
     # Under launchd the working directory is "/" (read-only). Move into the
     # writable data dir so the service's relative paths (screenrecord.log,
     # audit.log, consent_records.json) resolve there, matching the proven
@@ -42,8 +55,9 @@ def _setup_bundle_env() -> None:
             os.environ.setdefault("SCREENRECORD_FFMPEG", str(found))
             break
 
-    # A signed .app must never git-pull-update itself (it would break the code
-    # signature and the TCC grant). Updates ship as new notarized builds.
+    # Disable the legacy source-tree git updater in frozen builds. Packaged
+    # release updates are handled separately: a root helper on macOS and a
+    # per-user EXE swapper on Windows.
     os.environ["SCREENRECORD_DISABLE_UPDATER"] = "1"
 
 

@@ -18,6 +18,7 @@ hiddenimports += [
     "screenrecord.sheets_backend", "screenrecord.config_manager",
     "screenrecord.platform_utils", "screenrecord.input_monitor",
     "screenrecord.diagnostics", "screenrecord.provision",
+    "screenrecord.release_updater", "screenrecord.version",
     "screenrecord.tray", "screenrecord.macos_permissions",
     "yaml", "psutil",
     # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis

@@ -8,15 +8,31 @@
  * 2. Paste this code
  * 3. Click Deploy → New deployment → Web app
  * 4. Set "Execute as" = Me, "Who has access" = Anyone
- * 5. Click Deploy and copy the URL
- * 6. Paste the URL into your dashboard's APPS_SCRIPT_URL config
+ * 5. Set Script Property COMMAND_API_TOKEN to the dashboard token
+ * 6. Click Deploy and copy the URL
+ * 7. Paste the URL into your dashboard's APPS_SCRIPT_URL config
  */
+
+var DEFAULT_COMMAND_API_TOKEN = 'ScreenRecord2026-command-v1';
+var ALLOWED_COMMANDS = {
+  restart: true,
+  stop: true,
+  start: true,
+  record_test: true,
+  update_now: true
+};
 
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
     var computerName = data.computer_name;
     var command = data.command || 'restart';
+    var expectedToken = PropertiesService.getScriptProperties().getProperty('COMMAND_API_TOKEN') || DEFAULT_COMMAND_API_TOKEN;
+    if (expectedToken && data.token !== expectedToken) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ success: false, error: 'Unauthorized' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
 
     if (!computerName) {
       return ContentService.createTextOutput(
@@ -56,7 +72,13 @@ function doPost(e) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // ---- Default: queue a remote command (restart/stop/start/record_test) ----
+    // ---- Default: queue a remote command (restart/stop/start/record_test/update_now) ----
+    if (!ALLOWED_COMMANDS[command]) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ success: false, error: 'Unknown command: ' + command })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
     var sheet = ss.getSheetByName('Commands');
 
     if (!sheet) {

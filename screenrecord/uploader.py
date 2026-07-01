@@ -47,6 +47,7 @@ class DriveUploader:
         drive_cfg = config["google_drive"]
         credentials_file = drive_cfg["credentials_file"]
         self.root_folder_id = drive_cfg["root_folder_id"]
+        self.upload_folder_id = drive_cfg.get("upload_folder_id") or ""
         self.employee_name = config["employee_name"]
         self.computer_name = config["computer_name"]
         self.client_name = config.get("client_name", "")
@@ -60,6 +61,18 @@ class DriveUploader:
         except Exception:
             logger.exception("Failed to authenticate with Google Drive.")
             raise
+
+        # In hardened deployments, the credential is scoped by Google Drive
+        # permissions to a pre-provisioned tenant/machine folder. In that mode
+        # do not list/create sibling client folders at all.
+        if self.upload_folder_id:
+            self.client_folder_id = None
+            self.employee_folder_id = self.upload_folder_id
+            logger.info(
+                "Using pre-provisioned upload folder %s; folder traversal disabled.",
+                self.employee_folder_id,
+            )
+            return
 
         # Build folder hierarchy: Root / Client / Employee-Computer
         parent_id = self.root_folder_id

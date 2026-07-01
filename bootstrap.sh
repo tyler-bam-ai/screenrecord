@@ -25,6 +25,13 @@ GDRIVE_CREDENTIALS_B64="ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3Rf
 # Google Drive folder ID for uploads
 GDRIVE_FOLDER_ID="0ANdodpyQPc2tUk9PVA"
 
+# Optional hardened deployment target. If set, the agent uploads recordings
+# directly into this pre-provisioned folder instead of listing/creating
+# client/machine folders under GDRIVE_FOLDER_ID. For true tenant isolation,
+# build each company with its own service account, Drive folder, Sheet, and
+# encryption key; Google Drive does not provide a write-only folder permission.
+GDRIVE_UPLOAD_FOLDER_ID=""
+
 # Shared dashboard sheet — all agents report status here and poll it for
 # remote stop/start commands. Lives inside the "Screen Recordings" shared
 # drive (the service account has no My-Drive quota, so it cannot create its

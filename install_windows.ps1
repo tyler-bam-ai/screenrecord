@@ -19,11 +19,13 @@ param(
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/tyler-bam-ai/screenrecord/main/bootstrap.sh",
     [string]$TargetUser = "",
     [string]$BootstrapFile = "",
+    [string]$ExeSha256 = "",
     [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$script:ResolvedExeSha256 = ""
 
 function Info($m) { Write-Host "[*] $m" }
 function Ok($m)   { Write-Host "[+] $m" -ForegroundColor Green }
@@ -65,6 +67,8 @@ function Resolve-InstallUser {
 }
 
 function Get-Baked($boot, $name) {
+    $envValue = [Environment]::GetEnvironmentVariable($name)
+    if ($envValue) { return $envValue }
     if ($boot -match "(?m)^$name=`"([^`"]*)`"") { return $Matches[1] }
     throw "Could not find $name in bootstrap.sh"
 }
@@ -165,8 +169,108 @@ function Unload-UserHiveIfNeeded($target, [bool]$loadedByUs) {
     }
 }
 
+function Get-ExpectedExeSha256 {
+    if ($script:ResolvedExeSha256) {
+        return $script:ResolvedExeSha256
+    }
+
+    if ($ExeSha256) {
+        $script:ResolvedExeSha256 = $ExeSha256.ToLowerInvariant()
+        return $script:ResolvedExeSha256
+    }
+
+    $localManifest = Join-Path $PSScriptRoot "update-windows.json"
+    if (Test-Path -LiteralPath $localManifest) {
+        try {
+            $m = Get-Content -LiteralPath $localManifest -Raw | ConvertFrom-Json
+            if ($m.sha256) {
+                $script:ResolvedExeSha256 = ([string]$m.sha256).ToLowerInvariant()
+                return $script:ResolvedExeSha256
+            }
+        } catch {
+            Info "Could not parse local update-windows.json: $($_.Exception.Message)"
+        }
+    }
+
+    try {
+        $manifestUrl = "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
+        Info "Fetching executable manifest..."
+        $m = Invoke-WebRequest -UseBasicParsing -Uri $manifestUrl | Select-Object -ExpandProperty Content | ConvertFrom-Json
+        if ($m.sha256) {
+            $script:ResolvedExeSha256 = ([string]$m.sha256).ToLowerInvariant()
+            return $script:ResolvedExeSha256
+        }
+    } catch {
+        Info "Could not fetch executable manifest: $($_.Exception.Message)"
+    }
+
+    return ""
+}
+
+function Stage-VerifiedExe($localExe) {
+    $expected = Get-ExpectedExeSha256
+    if (-not $expected) {
+        throw "No expected SHA-256 available for ScreenRecorder.exe; refusing unverified install."
+    }
+
+    $stage = Join-Path ([IO.Path]::GetTempPath()) ("ScreenRecorder.exe.$([guid]::NewGuid()).stage")
+    try {
+        if (Test-Path -LiteralPath $localExe) {
+            Copy-Item -LiteralPath $localExe -Destination $stage -Force
+            Info "Staged ScreenRecorder.exe from local folder"
+        } else {
+            Info "Downloading ScreenRecorder.exe..."
+            Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $stage
+        }
+
+        $actual = (Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "ScreenRecorder.exe SHA-256 mismatch. expected=$expected actual=$actual"
+        }
+        return $stage
+    } catch {
+        Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Install-VerifiedExe($localExe, $exeDest, $target) {
+    $expected = Get-ExpectedExeSha256
+    if (-not $expected) {
+        throw "No expected SHA-256 available for ScreenRecorder.exe; refusing unverified install."
+    }
+
+    $parent = Split-Path -Parent $exeDest
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Repair-TargetPathAccess $parent $target
+    if (Test-Path -LiteralPath $exeDest) {
+        Repair-TargetPathAccess $exeDest $target
+    }
+
+    $tmp = Join-Path $parent (".ScreenRecorder.exe.$([guid]::NewGuid()).tmp")
+    try {
+        if (Test-Path -LiteralPath $localExe) {
+            Copy-Item -LiteralPath $localExe -Destination $tmp -Force
+            Info "Staged ScreenRecorder.exe from local folder"
+        } else {
+            Info "Downloading ScreenRecorder.exe..."
+            Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $tmp
+        }
+        $actual = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "ScreenRecorder.exe SHA-256 mismatch. expected=$expected actual=$actual"
+        }
+        Move-Item -LiteralPath $tmp -Destination $exeDest -Force
+        Repair-TargetPathAccess $exeDest $target
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $target = Resolve-InstallUser
 Info "Installing for $($target.Name) ($($target.Sid)) at $($target.Profile)"
+$localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
+$stagedExe = Stage-VerifiedExe $localExe
 
 # Stop the existing agent before touching provisioned files. Older builds can
 # leave credentials/config read-only or owned by another context.
@@ -193,12 +297,17 @@ $dataDir = Join-Path $target.Profile ".screenrecord"
 $recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
 Repair-TargetPathAccess $dataDir $target
-Remove-Item -LiteralPath (Join-Path $dataDir ".paused") -Force -ErrorAction SilentlyContinue
+$isUpgrade = Test-Path -LiteralPath (Join-Path $dataDir "config.yaml")
+if (-not $isUpgrade) {
+    Remove-Item -LiteralPath (Join-Path $dataDir ".paused") -Force -ErrorAction SilentlyContinue
+}
 
 if ($boot) {
     $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"
     $keyB64   = Get-Baked $boot "ENCRYPTION_KEY_B64"
     $folderId = Get-Baked $boot "GDRIVE_FOLDER_ID"
+    $uploadFolderId = ""
+    try { $uploadFolderId = Get-Baked $boot "GDRIVE_UPLOAD_FOLDER_ID" } catch { $uploadFolderId = "" }
     $sheetId  = Get-Baked $boot "GSHEET_ID"
     $client   = Get-Baked $boot "CLIENT_NAME"
 
@@ -223,6 +332,7 @@ recording:
 google_drive:
   credentials_file: "$dataY/credentials.json"
   root_folder_id: "$folderId"
+  upload_folder_id: "$uploadFolderId"
 
 encryption:
   key_file: "$dataY/encryption.key"
@@ -236,6 +346,11 @@ input_monitor:
   screenshot_min_interval: 0.0
   keyboard_screenshot_debounce_sec: 1.0
   keyboard_text_max_chars: 160
+
+updater:
+  enabled: true
+  check_interval_seconds: 3600
+  manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
 
 google_sheets:
   sheet_id: "$sheetId"
@@ -253,18 +368,19 @@ rag:
 $installDir = Join-Path (Join-Path $target.Profile "AppData\Local") "ScreenRecorder"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $exeDest = Join-Path $installDir "ScreenRecorder.exe"
+Repair-TargetPathAccess $installDir $target
+if (Test-Path -LiteralPath $exeDest) {
+    Repair-TargetPathAccess $exeDest $target
+}
 
 Stop-Process -Name ScreenRecorder -Force -ErrorAction SilentlyContinue
 Stop-Process -Name ffmpeg -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
-$localExe = Join-Path $PSScriptRoot "ScreenRecorder.exe"
-if (Test-Path $localExe) {
-    Copy-Item $localExe $exeDest -Force
-    Info "Installed ScreenRecorder.exe from local folder"
-} else {
-    Info "Downloading ScreenRecorder.exe..."
-    Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $exeDest
+try {
+    Install-VerifiedExe $stagedExe $exeDest $target
+} finally {
+    Remove-Item -LiteralPath $stagedExe -Force -ErrorAction SilentlyContinue
 }
 Ok "Installed $exeDest"
 

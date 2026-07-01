@@ -22,6 +22,23 @@ prepare_shared_logs() {
 }
 prepare_shared_logs
 
+write_updater_status() {
+    STATUS_VALUE="$1"
+    MESSAGE="$2"
+    mkdir -p "/Library/Application Support/ScreenRecorder" /Users/Shared 2>/dev/null || true
+    NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    for TARGET in \
+        "/Library/Application Support/ScreenRecorder/updater_status.json" \
+        "/Users/Shared/ScreenRecorder_updater_status.json"
+    do
+        {
+            printf '{"status":"%s","message":"%s","platform":"mac","last_checked":"%s"}\n' \
+                "$STATUS_VALUE" "$MESSAGE" "$NOW"
+        } > "$TARGET" 2>/dev/null || true
+        chmod 644 "$TARGET" 2>/dev/null || true
+    done
+}
+
 write_visible_install_diagnostic() {
     REASON="$1"
     mkdir -p /Users/Shared 2>/dev/null || true
@@ -86,6 +103,25 @@ write_visible_install_diagnostic() {
     fi
 }
 
+start_updater_daemon() {
+    # Start the root updater helper installed by this pkg. During a helper-driven
+    # update, do not unload the very LaunchDaemon that is running installer.
+    mkdir -p /Library/Logs/ScreenRecorder /Users/Shared 2>/dev/null || true
+    touch /Library/Logs/ScreenRecorder/updater.log /Users/Shared/ScreenRecorder_updater.log 2>/dev/null || true
+    chmod 644 /Library/Logs/ScreenRecorder/updater.log /Users/Shared/ScreenRecorder_updater.log 2>/dev/null || true
+    if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ]; then
+        echo "Skipping updater LaunchDaemon reload during helper-driven install."
+        return
+    fi
+    launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true
+    if launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist; then
+        echo "Updater LaunchDaemon bootstrapped."
+    else
+        echo "Updater LaunchDaemon bootstrap failed or already loaded."
+    fi
+    launchctl kickstart -k system/ai.bam.screenrecord.updater 2>/dev/null || true
+}
+
 # Detect the GUI console user. scutil is reliable in the MDM/root install
 # context; stat -f%Su /dev/console returns "root" there even when a user is
 # logged in, which silently skipped provisioning. If still no user, exit clean:
@@ -95,12 +131,14 @@ CONSOLE_USER=$(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/{print 
 echo "Console user: ${CONSOLE_USER:-<none>}"
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
     echo "No logged-in user at install time; app will self-provision at next login."
+    start_updater_daemon
     write_visible_install_diagnostic "no logged-in GUI user at install time"
     exit 0
 fi
 USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 if [ -z "$USER_HOME" ]; then
     echo "Could not resolve home directory for $CONSOLE_USER."
+    start_updater_daemon
     write_visible_install_diagnostic "could not resolve user home"
     exit 0
 fi
@@ -124,7 +162,9 @@ rm -f /Library/LaunchAgents/com.screenrecord.agent.plist
 
 printf '%s' "__GCREDS__" | base64 -d > "$DIR/credentials.json"
 printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
-rm -f "$DIR/.paused"
+if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" != "1" ]; then
+    rm -f "$DIR/.paused"
+fi
 
 # Friendly identity for the dashboard: real name + short hostname
 # (e.g. "Rebekah Davis" / "Rebekahs-iMac"), matching the original installer.
@@ -134,7 +174,10 @@ EMP=$(dscl . -read "/Users/$CONSOLE_USER" RealName 2>/dev/null | awk 'NR==2{$1=$
 COMP=$(hostname -s 2>/dev/null)
 [ -z "$COMP" ] && COMP=$(scutil --get LocalHostName 2>/dev/null || hostname)
 
-cat > "$DIR/config.yaml" <<YAML
+if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ] && [ -f "$DIR/config.yaml" ]; then
+    echo "Preserving existing config.yaml during helper-driven update."
+else
+    cat > "$DIR/config.yaml" <<YAML
 client_name: "__CLIENT__"
 employee_name: "$EMP"
 computer_name: "$COMP"
@@ -149,6 +192,7 @@ recording:
 google_drive:
   credentials_file: "$DIR/credentials.json"
   root_folder_id: "__FOLDER__"
+  upload_folder_id: "__UPLOAD_FOLDER__"
 
 encryption:
   key_file: "$DIR/encryption.key"
@@ -156,12 +200,25 @@ encryption:
 analysis:
   enabled: false
 
+input_monitor:
+  enabled: true
+  capture_keystroke_text: true
+  screenshot_min_interval: 0.0
+  keyboard_screenshot_debounce_sec: 1.0
+  keyboard_text_max_chars: 160
+
+updater:
+  enabled: true
+  check_interval_seconds: 3600
+  manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/mac-latest/update-mac.json"
+
 google_sheets:
   sheet_id: "__SHEET__"
 
 rag:
   enabled: false
 YAML
+fi
 
 chmod 700 "$DIR"
 chmod 400 "$DIR/credentials.json"
@@ -222,9 +279,15 @@ sleep 3
 chown "$CONSOLE_USER" "$DIR/install_diagnostic.txt" 2>/dev/null || true
 echo "Wrote $DIR/install_diagnostic.txt"
 
+start_updater_daemon
+
 if [ "$BOOTSTRAP_RC" -ne 0 ] || [ "$KICKSTART_RC" -ne 0 ] || \
    ! launchctl print "gui/$UID_N/ai.bam.screenrecord" >/dev/null 2>&1 || \
    ! ps axww -o command | grep -q "[S]creenRecorder.app/Contents/MacOS/ScreenRecorder"; then
     write_visible_install_diagnostic "agent did not launch cleanly after install"
+    write_updater_status "launch_failed" "agent did not launch cleanly after install"
+    if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ]; then
+        exit 72
+    fi
 fi
 exit 0

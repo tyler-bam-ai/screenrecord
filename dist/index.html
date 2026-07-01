@@ -1024,6 +1024,7 @@ tbody tr:hover td { background: rgba(51, 65, 85, 0.25); }
 // ===== CONFIGURATION =====
 const SHEET_ID = '1ujcQshvE7Gu_i_42kwgjQCpfmeID_EyZtpMC35g2bFU';
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz5MXgQZUTt7OSfmKN0OwOEfyqBV6I77-kbkNTvXJXePD4V0KxB668iNl3G8nYKMqKVWw/exec';
+const COMMAND_API_TOKEN = 'ScreenRecord2026-command-v1';
 const DASHBOARD_PASSWORD = 'SinusRecord2026';
 const MACHINES_TAB = 'Machines';
 const RECORDINGS_TAB = 'Recordings';
@@ -1414,6 +1415,7 @@ function renderMachines(machines) {
           }
           <button class="btn btn-danger-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'restart')">Restart</button>
           <button class="btn btn-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'record_test')" title="Capture a single 60-second clip now to verify the upload pipeline">Test 60s</button>
+          <button class="btn btn-outline btn-sm" onclick="confirmCommand('${esc(m._computer)}', '${esc(m._employee)}', 'update_now')" title="Ask this machine to check for and apply the latest signed update">Update</button>
         </div>
       </td>
     </tr>
@@ -1621,18 +1623,26 @@ async function sendCommand(computer, command) {
     return;
   }
   const label = command === 'start' ? 'Starting' : command === 'stop' ? 'Pausing'
-    : command === 'record_test' ? 'Requesting a 60s test clip from' : 'Restarting';
+    : command === 'record_test' ? 'Requesting a 60s test clip from'
+    : command === 'update_now' ? 'Requesting an update check from'
+    : 'Restarting';
   showToast(`${label} ${computer}...`, 'info');
   try {
     await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ computer_name: computer, command }),
+      body: JSON.stringify({ computer_name: computer, command, token: COMMAND_API_TOKEN }),
       mode: 'no-cors',
     });
     const doneLabel = command === 'start' ? 'Start' : command === 'stop' ? 'Stop'
-      : command === 'record_test' ? 'Test-clip' : 'Restart';
-    const eta = command === 'record_test' ? 'Clip should appear below in ~90 seconds.' : 'Takes ~30 seconds.';
+      : command === 'record_test' ? 'Test-clip'
+      : command === 'update_now' ? 'Update'
+      : 'Restart';
+    const eta = command === 'record_test'
+      ? 'Clip should appear below in ~90 seconds.'
+      : command === 'update_now'
+        ? 'Machine will apply it if the signed manifest has a newer build.'
+        : 'Takes ~30 seconds.';
     showToast(`${doneLabel} command sent to ${computer}. ${eta}`, 'success');
   } catch (err) {
     showToast(`Command failed: ${err.message}`, 'error');
@@ -1658,7 +1668,7 @@ async function setMachineField(computer, field, value) {
     await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ computer_name: computer, action: 'set_field', field, value }),
+      body: JSON.stringify({ computer_name: computer, action: 'set_field', field, value, token: COMMAND_API_TOKEN }),
       mode: 'no-cors',
     });
     showToast('Saved. Updating...', 'success');
@@ -1680,6 +1690,7 @@ const COMMAND_COPY = {
   stop:    { title: 'Confirm Stop',    verb: 'pause recording on',     ok: '██ Stop', okClass: 'btn-stop-outline' },
   restart: { title: 'Confirm Restart', verb: 'restart the service on', ok: 'Restart',           okClass: 'btn-danger-outline' },
   record_test: { title: 'Record Test Clip', verb: 'capture a 60-second test clip on', ok: 'Test 60s', okClass: 'btn-outline' },
+  update_now: { title: 'Confirm Update', verb: 'check for and apply the latest signed update on', ok: 'Update', okClass: 'btn-outline' },
 };
 
 function confirmCommand(computer, employee, command) {
@@ -1809,16 +1820,7 @@ async function decryptAndPlay(driveId, filename, keyStr) {
       ['decrypt']
     );
 
-    // The encrypted file format: first 12 bytes are the IV (nonce), rest is ciphertext+tag
-    const encArray = new Uint8Array(encryptedData);
-    const iv = encArray.slice(0, 12);
-    const ciphertext = encArray.slice(12);
-
-    const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: iv },
-      cryptoKey,
-      ciphertext
-    );
+    const decrypted = await decryptScreenRecordFile(encryptedData, cryptoKey);
 
     // Create a blob URL and play
     const blob = new Blob([decrypted], { type: 'video/mp4' });
@@ -1840,6 +1842,56 @@ async function decryptAndPlay(driveId, filename, keyStr) {
     statusEl.className = 'decrypt-status error';
     statusEl.textContent = `Decryption failed: ${err.message}`;
   }
+}
+
+async function decryptScreenRecordFile(encryptedData, cryptoKey) {
+  const encArray = new Uint8Array(encryptedData);
+  const magic = new TextDecoder().decode(encArray.slice(0, 6));
+
+  if (magic !== 'ENCRV1') {
+    // Legacy single-chunk format: first 12 bytes are the IV, rest is ciphertext+tag.
+    const iv = encArray.slice(0, 12);
+    const ciphertext = encArray.slice(12);
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+  }
+
+  const view = new DataView(encryptedData);
+  let offset = 6;
+  if (encArray.byteLength < offset + 4) throw new Error('Encrypted file is truncated.');
+  const chunkCount = view.getUint32(offset, false);
+  offset += 4;
+
+  const chunks = [];
+  let totalLength = 0;
+  for (let i = 0; i < chunkCount; i += 1) {
+    if (encArray.byteLength < offset + 16) {
+      throw new Error(`Encrypted file is truncated at chunk ${i + 1}.`);
+    }
+    const iv = encArray.slice(offset, offset + 12);
+    offset += 12;
+    const encLen = view.getUint32(offset, false);
+    offset += 4;
+    if (encArray.byteLength < offset + encLen) {
+      throw new Error(`Encrypted file is truncated inside chunk ${i + 1}.`);
+    }
+    const ciphertext = encArray.slice(offset, offset + encLen);
+    offset += encLen;
+    const plain = new Uint8Array(await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      cryptoKey,
+      ciphertext
+    ));
+    chunks.push(plain);
+    totalLength += plain.byteLength;
+  }
+
+  const combined = new Uint8Array(totalLength);
+  let writeOffset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, writeOffset);
+    writeOffset += chunk.byteLength;
+  }
+  return combined.buffer;
 }
 
 function closeVideoModal() {

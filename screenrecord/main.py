@@ -161,6 +161,7 @@ class ScreenRecordService:
         from .compliance import ComplianceManager
         from .encryption import FileEncryptor
         from .heartbeat import HeartbeatSender
+        from .release_updater import ReleaseUpdater
         from .updater import UpdateChecker
 
         self.uploader = self._init_uploader()
@@ -255,29 +256,47 @@ class ScreenRecordService:
             self.rag_system.start_periodic_synthesis()
             logger.info("RAG periodic synthesis started")
 
-        # Start update checker thread (checks hourly). The bundled/signed .app must
+        # Start release updater thread for packaged Windows builds. macOS package
+        # replacement is handled by the root LaunchDaemon helper installed by
+        # the pkg, because a user-mode signed .app cannot safely overwrite
+        # /Applications or /Library without breaking the signature/TCC contract.
+        if ReleaseUpdater.enabled_for_platform(self.config):
+            try:
+                self.update_checker = ReleaseUpdater(self.config)
+                self._update_thread = threading.Thread(
+                    target=self._release_update_check_loop,
+                    name="release-update-checker",
+                    daemon=True,
+                )
+                self._update_thread.start()
+                logger.info("Release updater started")
+            except Exception:
+                logger.exception("Failed to start release updater; continuing without it")
+                self.update_checker = None
+        # Start source checkout update checker (checks hourly). The bundled/signed .app must
         # NEVER self-update from git: it would try to overwrite its own read-only
         # signed bundle (breaking the signature and the Screen Recording grant).
         # Bundled builds ship updates as new notarized .pkgs via MDM instead. Skip
         # the updater when frozen (PyInstaller bundle) or when explicitly disabled
         # via SCREENRECORD_DISABLE_UPDATER (set by app_entry for the bundle).
-        _disable = os.environ.get("SCREENRECORD_DISABLE_UPDATER", "")
-        if getattr(sys, "frozen", False) or _disable not in ("", "0", "false", "False"):
-            logger.info("Auto-updater disabled (bundled/frozen build or env override)")
-            self.update_checker = None
         else:
-            try:
-                self.update_checker = UpdateChecker(self.config)
-                self._update_thread = threading.Thread(
-                    target=self._update_check_loop,
-                    name="update-checker",
-                    daemon=True,
-                )
-                self._update_thread.start()
-                logger.info("Update checker started")
-            except Exception:
-                logger.exception("Failed to start update checker; continuing without it")
+            _disable = os.environ.get("SCREENRECORD_DISABLE_UPDATER", "")
+            if getattr(sys, "frozen", False) or _disable not in ("", "0", "false", "False"):
+                logger.info("Auto-updater disabled (bundled/frozen build or env override)")
                 self.update_checker = None
+            else:
+                try:
+                    self.update_checker = UpdateChecker(self.config)
+                    self._update_thread = threading.Thread(
+                        target=self._update_check_loop,
+                        name="update-checker",
+                        daemon=True,
+                    )
+                    self._update_thread.start()
+                    logger.info("Update checker started")
+                except Exception:
+                    logger.exception("Failed to start update checker; continuing without it")
+                    self.update_checker = None
 
         if self._recording_blocked_reason is None:
             self._upload_diagnostics_once("running")
@@ -434,6 +453,13 @@ class ScreenRecordService:
             logger.warning("Runtime health problem: %s (%s)", problem, detail)
             self._upload_health_diagnostics(problem)
 
+        updater_status = {}
+        try:
+            from .release_updater import read_update_status
+            updater_status = read_update_status(self.config)
+        except Exception:
+            updater_status = {}
+
         if self.heartbeat:
             self.heartbeat.update_details(
                 runtime_health=problem or "ok",
@@ -454,6 +480,11 @@ class ScreenRecordService:
                 last_upload_error=self._last_upload_error,
                 consecutive_upload_failures=self._consecutive_upload_failures,
                 last_ffmpeg_error=last_ffmpeg_error,
+                updater_status=updater_status.get("status", ""),
+                updater_message=updater_status.get("message", ""),
+                updater_local_version=updater_status.get("local_version", ""),
+                updater_remote_version=updater_status.get("remote_version", ""),
+                updater_last_checked=updater_status.get("last_checked", ""),
             )
 
     def _permission_status(self) -> str:
@@ -486,6 +517,30 @@ class ScreenRecordService:
             return "error"
         return "recording"
 
+    def _updater_warning(self) -> str:
+        try:
+            from .release_updater import read_update_status
+            status = read_update_status(self.config)
+        except Exception:
+            return ""
+        state = str(status.get("status") or "")
+        if not state or not (
+            state.endswith("_failed")
+            or state in {
+                "check_failed",
+                "manifest_invalid",
+                "hash_mismatch",
+                "signature_failed",
+                "team_failed",
+                "assessment_failed",
+                "install_failed",
+                "download_failed",
+            }
+        ):
+            return ""
+        message = str(status.get("message") or state)[:180]
+        return f"ERROR: updater_{state}: {message}"
+
     def _update_machine_status_once(self) -> None:
         if self.sheets_backend is None:
             return
@@ -501,6 +556,8 @@ class ScreenRecordService:
                 permissions = f"ERROR: {self._runtime_health_problem}"
                 if detail:
                     permissions = f"{permissions}: {detail[:180]}"
+            elif not self._recording_blocked_reason:
+                permissions = self._updater_warning() or permissions
             self.sheets_backend.update_machine(
                 computer_name=self.config.get("computer_name", "Unknown"),
                 employee_name=self.config.get("employee_name", "Unknown"),
@@ -630,6 +687,60 @@ class ScreenRecordService:
                 logger.exception("Error during update check")
             self.stop_event.wait(timeout=update_interval)
 
+    def _release_update_check_loop(self):
+        """Check signed release manifests and apply packaged updates."""
+        interval = 3600
+        if self.update_checker is not None:
+            interval = max(300, int(getattr(self.update_checker, "check_interval_seconds", 3600)))
+
+        self.stop_event.wait(timeout=60)
+        while not self.stop_event.is_set():
+            try:
+                if self.update_checker and self.update_checker.check_and_stage():
+                    logger.info("Release update staged. Launching helper.")
+                    if self.heartbeat:
+                        self.heartbeat.set_status("updating - applying")
+                    if self.update_checker.launch_staged_update():
+                        self.stop()
+                        os._exit(0)
+            except Exception:
+                logger.exception("Error during release update check")
+            self.stop_event.wait(timeout=interval)
+
+    def _request_update_now(self) -> None:
+        """Handle a dashboard update_now command without blocking polling."""
+        if sys.platform == "darwin":
+            try:
+                from .release_updater import ReleaseUpdater
+                trigger = ReleaseUpdater.request_external_update()
+                logger.info("Requested macOS updater helper check via %s", trigger)
+                if self.heartbeat:
+                    self.heartbeat.update_details(
+                        updater_status="requested",
+                        updater_message="macOS root updater helper was requested.",
+                    )
+            except Exception:
+                logger.exception("Failed to request macOS updater helper")
+            return
+
+        def _run() -> None:
+            try:
+                from .release_updater import ReleaseUpdater
+                updater = self.update_checker
+                if not isinstance(updater, ReleaseUpdater):
+                    updater = ReleaseUpdater(self.config)
+                if updater.check_and_stage(force=False):
+                    logger.info("Manual release update staged. Launching helper.")
+                    if self.heartbeat:
+                        self.heartbeat.set_status("updating - applying")
+                    if updater.launch_staged_update():
+                        self.stop()
+                        os._exit(0)
+            except Exception:
+                logger.exception("Manual update_now check failed")
+
+        threading.Thread(target=_run, name="update-now", daemon=True).start()
+
     def _command_poll_loop(self):
         """Poll Google Sheets for commands and update machine status every 30 seconds."""
         poll_interval = 30
@@ -657,6 +768,8 @@ class ScreenRecordService:
                     perms = f"ERROR: {self._runtime_health_problem}"
                     if detail:
                         perms = f"{perms}: {detail[:180]}"
+                elif not self._recording_blocked_reason:
+                    perms = self._updater_warning() or perms
                 self.sheets_backend.update_machine(
                     computer_name=computer_name,
                     employee_name=employee_name,
@@ -669,7 +782,7 @@ class ScreenRecordService:
                 commands = self.sheets_backend.check_commands(computer_name)
                 for cmd in commands:
                     command = cmd["command"]
-                    if command not in ("restart", "stop", "start", "record_test"):
+                    if command not in ("restart", "stop", "start", "record_test", "update_now"):
                         continue
                     if self._command_is_stale(cmd.get("timestamp")):
                         logger.warning(
@@ -703,6 +816,9 @@ class ScreenRecordService:
                             self._record_test_clip(duration=60)
                         except Exception:
                             logger.exception("record_test: failed to capture clip")
+                    elif command == "update_now":
+                        logger.info("Requesting update check per remote command...")
+                        self._request_update_now()
             except Exception:
                 logger.exception("Error polling for commands")
 

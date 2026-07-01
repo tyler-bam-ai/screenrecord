@@ -5,6 +5,9 @@
 
 from PyInstaller.utils.hooks import collect_all
 
+_version_ns = {}
+exec(open("../screenrecord/version.py", encoding="utf-8").read(), _version_ns)
+
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("googleapiclient", "google_auth_httplib2", "google.auth",
             "google_auth_oauthlib", "google", "cryptography",
@@ -20,6 +23,7 @@ hiddenimports += [
     "screenrecord.platform_utils", "screenrecord.input_monitor",
     "screenrecord.provision", "screenrecord.tray",
     "screenrecord.macos_permissions", "screenrecord.diagnostics",
+    "screenrecord.release_updater", "screenrecord.version",
     "yaml", "psutil",
     # pynput/mss pick their OS backend at runtime; PyInstaller's static analysis
     # misses these, so name them explicitly or input capture silently no-ops.
@@ -67,8 +71,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "ScreenRecorder",
         "CFBundleDisplayName": "Screen Recorder",
-        "CFBundleShortVersionString": "1.4.12",
-        "CFBundleVersion": "17",
+        "CFBundleShortVersionString": _version_ns["MAC_VERSION"],
+        "CFBundleVersion": _version_ns["MAC_BUILD"],
         "LSUIElement": True,          # background agent, no Dock icon
         "LSBackgroundOnly": False,    # still needs a UI session for the TCC prompt
         "NSScreenCaptureUsageDescription":
