@@ -192,6 +192,7 @@ $dataDir = Join-Path $target.Profile ".screenrecord"
 $recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
 Repair-TargetPathAccess $dataDir $target
+Remove-Item -LiteralPath (Join-Path $dataDir ".paused") -Force -ErrorAction SilentlyContinue
 
 if ($boot) {
     $credsB64 = Get-Baked $boot "GDRIVE_CREDENTIALS_B64"

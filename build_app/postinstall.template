@@ -124,6 +124,7 @@ rm -f /Library/LaunchAgents/com.screenrecord.agent.plist
 
 printf '%s' "__GCREDS__" | base64 -d > "$DIR/credentials.json"
 printf '%s' "__ENCKEY__" | base64 -d > "$DIR/encryption.key"
+rm -f "$DIR/.paused"
 
 # Friendly identity for the dashboard: real name + short hostname
 # (e.g. "Rebekah Davis" / "Rebekahs-iMac"), matching the original installer.
