@@ -222,9 +222,8 @@ if SCREENRECORDER_UPDATER_INSTALL=1 /usr/sbin/installer -pkg "$PKG" -target / >>
     log "Install complete (now=$NEW_LOCAL)."
     write_status "updated" "Installed and restarted." "$REMOTE" "$NEW_LOCAL"
     ( sleep 10
-      launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true
-      launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist 2>/dev/null || true
-      launchctl kickstart -k system/ai.bam.screenrecord.updater 2>/dev/null || true
+      launchctl print system/ai.bam.screenrecord.updater >/dev/null 2>&1 ||
+          launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist 2>/dev/null || true
     ) >/dev/null 2>&1 &
     rm -f "$TRIGGER" 2>/dev/null || true
 else

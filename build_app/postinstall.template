@@ -124,19 +124,23 @@ start_updater_daemon() {
     mkdir -p /Library/Logs/ScreenRecorder 2>/dev/null || true
     touch /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
     chmod 644 /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
-    if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ]; then
-        echo "Scheduling updater LaunchDaemon reload after helper-driven install."
-        write_updater_status "updated" "Installed package; updater daemon reload scheduled."
-        /usr/bin/nohup /bin/bash -c 'sleep 20; /bin/launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true; /bin/launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist 2>/dev/null || true; /bin/launchctl kickstart -k system/ai.bam.screenrecord.updater 2>/dev/null || true' >/dev/null 2>&1 &
+
+    /usr/bin/nohup /bin/bash -c 'sleep 25; for attempt in 1 2 3 4 5 6 7 8 9 10; do /bin/launchctl print system/ai.bam.screenrecord.updater >/dev/null 2>&1 && exit 0; /bin/launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist >/dev/null 2>&1 && exit 0; sleep 3; done' >/dev/null 2>&1 &
+
+    if launchctl print system/ai.bam.screenrecord.updater >/dev/null 2>&1; then
+        echo "Updater LaunchDaemon already loaded."
         return
     fi
-    launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true
-    if launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist; then
-        echo "Updater LaunchDaemon bootstrapped."
-    else
-        echo "Updater LaunchDaemon bootstrap failed or already loaded."
-    fi
-    launchctl kickstart -k system/ai.bam.screenrecord.updater 2>/dev/null || true
+
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist; then
+            echo "Updater LaunchDaemon bootstrapped."
+            return
+        fi
+        echo "Updater LaunchDaemon bootstrap attempt $attempt failed."
+        sleep 2
+    done
+    echo "Updater LaunchDaemon bootstrap deferred."
 }
 
 # Detect the GUI console user. scutil is reliable in the MDM/root install
