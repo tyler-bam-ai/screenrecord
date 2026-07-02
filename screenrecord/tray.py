@@ -7,6 +7,7 @@ backend is unavailable, the agent runs fine without it. Never blocks the agent.
 """
 
 import logging
+import platform
 import threading
 from typing import Callable, Optional
 
@@ -22,6 +23,9 @@ def start_tray(
     """Start the tray icon in a daemon thread. Best-effort, returns nothing."""
     global _icon
     if _icon is not None:
+        return
+    if platform.system() == "Darwin":
+        logger.info("Menu-bar pause menu disabled on macOS LaunchAgent build.")
         return
     try:
         import pystray

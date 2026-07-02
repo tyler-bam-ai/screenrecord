@@ -35,6 +35,17 @@ if [ "$RC" -ne 0 ]; then
         USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
     fi
 
+    WRITABLE_FAIL=""
+    for CANDIDATE in "$FAIL" "$SHARED/ScreenRecorder_startup_failure_${UID:-user}.txt" "/tmp/ScreenRecorder_startup_failure_${UID:-user}.txt"; do
+        if : > "$CANDIDATE" 2>/dev/null; then
+            WRITABLE_FAIL="$CANDIDATE"
+            break
+        fi
+    done
+    if [ -n "$WRITABLE_FAIL" ]; then
+        FAIL="$WRITABLE_FAIL"
+    fi
+
     {
         echo "ScreenRecorder startup failure"
         echo "created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
