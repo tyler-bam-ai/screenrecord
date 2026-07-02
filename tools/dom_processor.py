@@ -125,18 +125,20 @@ def _load_encryptor() -> FileEncryptor:
     )
 
 
-def _upload_png(drv, path, parent, upload_name=None):
+def _upload_image(drv, path, parent, upload_name=None):
     """Archive the full-res screenshot in Drive (kept private)."""
+    suffix = Path(path).suffix.lower()
+    mimetype = "image/png" if suffix == ".png" else "image/jpeg"
     meta = {"name": upload_name or Path(path).name, "parents": [parent]}
-    media = MediaFileUpload(path, mimetype="image/png")
+    media = MediaFileUpload(path, mimetype=mimetype)
     return drv.files().create(body=meta, media_body=media, fields="id",
                               supportsAllDrives=True).execute()["id"]
 
 
-def _thumb_data_uri(png_path: Path) -> str:
+def _thumb_data_uri(image_path: Path) -> str:
     """Inline JPEG data URI of a screenshot for the dashboard grid. Steps the
     width/quality down until it fits Sheets' cell limit."""
-    img = Image.open(png_path).convert("RGB")
+    img = Image.open(image_path).convert("RGB")
     for w, q in [(640, 55), (560, 48), (480, 42), (400, 38)]:
         im = img.resize((w, max(1, int(img.height * w / img.width))))
         buf = io.BytesIO()
@@ -203,24 +205,27 @@ def main():
         if not events:
             print(f"  no events in {stem}; skip"); continue
 
-        id_by_png, thumb_by_png = {}, {}
+        id_by_image, thumb_by_image = {}, {}
         if shots.is_dir():
-            for png in sorted(shots.glob("*.png")):
-                upload_name = f"{stem}__{png.name}"
-                id_by_png[png.name] = _upload_png(
-                    drv, str(png), shots_folder, upload_name=upload_name,
+            images = []
+            for pattern in ("*.png", "*.jpg", "*.jpeg"):
+                images.extend(shots.glob(pattern))
+            for image in sorted(images):
+                upload_name = f"{stem}__{image.name}"
+                id_by_image[image.name] = _upload_image(
+                    drv, str(image), shots_folder, upload_name=upload_name,
                 )
-                thumb_by_png[png.name] = _thumb_data_uri(png)
+                thumb_by_image[image.name] = _thumb_data_uri(image)
 
         for ev in events:
             shot = ev.get("screenshot")
             new_rows.append([
                 ev.get("ts_utc", ""), computer, ev.get("video_file", ""),
                 ev.get("video_offset_sec", ""), ev.get("event_type", ""),
-                _event_detail(ev), id_by_png.get(shot, ""), stem, ev.get("seq", ""),
-                thumb_by_png.get(shot, ""),
+                _event_detail(ev), id_by_image.get(shot, ""), stem, ev.get("seq", ""),
+                thumb_by_image.get(shot, ""),
             ])
-        print(f"  processed {stem}: {len(events)} events, {len(id_by_png)} screenshots")
+        print(f"  processed {stem}: {len(events)} events, {len(id_by_image)} screenshots")
 
     if new_rows:
         new_rows.sort(key=lambda row: row[0])

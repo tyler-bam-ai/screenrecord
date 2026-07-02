@@ -79,16 +79,12 @@ def main():
     # Normal operation: start the service
     from .main import ScreenRecordService
 
-    # Best-effort tray icon on Windows. The macOS build is an LSUIElement
-    # background app and does not need a menu bar helper during MDM startup.
-    if sys.platform.startswith("win"):
-        try:
-            from . import tray
-            tray.start_tray()
-        except Exception:
-            pass
-
     service = ScreenRecordService(config)
+    try:
+        from . import tray
+        tray.start_tray(pause_callback=service.pause_for_minutes)
+    except Exception:
+        pass
     try:
         service.start()
     except KeyboardInterrupt:
@@ -101,6 +97,12 @@ def main():
             pass
         service.stop()
         sys.exit(1)
+    finally:
+        try:
+            from . import tray
+            tray.stop_tray()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

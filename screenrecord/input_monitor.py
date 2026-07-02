@@ -10,8 +10,8 @@ For every event we record, into files named after the current video segment:
       - the video filename and the offset (seconds) into that video
       - event type + details (button/coords for clicks, key text for keys)
       - the screenshot filename
-  * a PNG in ``<segment_stem>.events/`` showing the screen with a marker on the
-    cursor (and a stronger marker on a click).
+  * an image in ``<segment_stem>.events/`` showing the screen with a marker on
+    the cursor (and a stronger marker on a click).
 
 The main service uploads these alongside the encrypted video segment, so a
 reviewer can jump straight to the moment in the video. PHI masking happens in a
@@ -59,6 +59,20 @@ class InputMonitor:
         self._keyboard_text_max_chars: int = max(
             0, int(im.get("keyboard_text_max_chars", 160))
         )
+        self._click_screenshot_delay: float = max(
+            0.0, float(im.get("click_screenshot_delay_sec", 0.15))
+        )
+        self._screenshot_format = str(im.get("screenshot_format", "jpg")).lower()
+        if self._screenshot_format == "jpeg":
+            self._screenshot_format = "jpg"
+        if self._screenshot_format not in ("jpg", "png"):
+            self._screenshot_format = "jpg"
+        self._jpeg_quality: int = min(
+            95, max(40, int(im.get("screenshot_jpeg_quality", 78)))
+        )
+        self._screenshot_max_width: int = max(
+            0, int(im.get("screenshot_max_width", 2560))
+        )
 
         self._segment_provider = segment_provider
         self._events_dir = Path(output_dir)
@@ -74,6 +88,7 @@ class InputMonitor:
         self._pending_key_started_at: Optional[float] = None
         self._pending_key_last_at: Optional[float] = None
         self._pending_key_segment: Optional[Tuple[str, float]] = None
+        self._shot_timers: List[threading.Timer] = []
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -115,6 +130,7 @@ class InputMonitor:
             except Exception:
                 pass
         self._cancel_key_timer()
+        self._drain_shot_timers()
         logger.info("Input monitor stopped.")
 
     # ------------------------------------------------------------------
@@ -130,6 +146,7 @@ class InputMonitor:
             cursor=(int(x), int(y)),
             emphasize=True,
             force_screenshot=True,
+            screenshot_delay=self._click_screenshot_delay,
         )
 
     def _on_press(self, key) -> None:
@@ -232,6 +249,7 @@ class InputMonitor:
         *,
         force_screenshot: bool = False,
         segment: Optional[Tuple[str, float]] = None,
+        screenshot_delay: float = 0.0,
     ) -> None:
         if not self._running:
             return
@@ -258,15 +276,7 @@ class InputMonitor:
         stem = Path(seg_name).stem  # video file stem
         shot_name = ""
         if take_shot:
-            shot_name = self._capture_screenshot(
-                stem=stem,
-                seq=seq,
-                event_type=event_type,
-                offset=offset,
-                ts_utc=ts_utc,
-                cursor=cursor,
-                emphasize=emphasize,
-            )
+            shot_name = self._shot_name(seq, event_type, offset)
 
         record = {
             "ts_utc": ts_utc,
@@ -277,6 +287,52 @@ class InputMonitor:
             "screenshot": shot_name,
             "seq": seq,
         }
+
+        if take_shot and screenshot_delay > 0:
+            def _finish_later() -> None:
+                try:
+                    actual = self._capture_screenshot(
+                        stem=stem,
+                        shot_name=shot_name,
+                        seq=seq,
+                        event_type=event_type,
+                        offset=offset,
+                        ts_utc=ts_utc,
+                        cursor=cursor,
+                        emphasize=emphasize,
+                    )
+                    if not actual:
+                        record["screenshot"] = ""
+                    self._write_record(stem, record)
+                finally:
+                    with self._lock:
+                        self._shot_timers = [
+                            t for t in self._shot_timers if t.is_alive()
+                        ]
+
+            timer = threading.Timer(screenshot_delay, _finish_later)
+            timer.daemon = True
+            with self._lock:
+                self._shot_timers.append(timer)
+            timer.start()
+            return
+
+        if take_shot:
+            actual = self._capture_screenshot(
+                stem=stem,
+                shot_name=shot_name,
+                seq=seq,
+                event_type=event_type,
+                offset=offset,
+                ts_utc=ts_utc,
+                cursor=cursor,
+                emphasize=emphasize,
+            )
+            if not actual:
+                record["screenshot"] = ""
+        self._write_record(stem, record)
+
+    def _write_record(self, stem: str, record: dict) -> None:
         try:
             events_file = self._events_dir / f"{stem}.events.jsonl"
             with open(events_file, "a", encoding="utf-8") as fh:
@@ -288,6 +344,7 @@ class InputMonitor:
         self,
         *,
         stem: str,
+        shot_name: str,
         seq: int,
         event_type: str,
         offset: float,
@@ -305,10 +362,18 @@ class InputMonitor:
                 mon = sct.monitors[0]  # full virtual desktop across monitors
                 raw = sct.grab(mon)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+
+            scale = 1.0
+            if self._screenshot_max_width and img.width > self._screenshot_max_width:
+                scale = self._screenshot_max_width / float(img.width)
+                new_size = (self._screenshot_max_width, max(1, int(img.height * scale)))
+                resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                img = img.resize(new_size, resample)
+
             draw = ImageDraw.Draw(img, "RGBA")
             if cursor is not None:
-                cx = cursor[0] - mon["left"]
-                cy = cursor[1] - mon["top"]
+                cx = int((cursor[0] - mon["left"]) * scale)
+                cy = int((cursor[1] - mon["top"]) * scale)
                 r = 26 if emphasize else 16
                 # translucent fill on a click; ring + crosshair always
                 if emphasize:
@@ -324,15 +389,38 @@ class InputMonitor:
             self._draw_label(draw, label)
             shot_dir = self._events_dir / f"{stem}.events"
             shot_dir.mkdir(parents=True, exist_ok=True)
-            shot_name = (
-                f"{seq:06d}_{self._safe_token(event_type)}_"
-                f"{self._format_offset(offset).replace(':', '-')}.png"
-            )
-            img.save(shot_dir / shot_name, "PNG")
+            out_path = shot_dir / shot_name
+            if self._screenshot_format == "png":
+                img.save(out_path, "PNG")
+            else:
+                img.save(
+                    out_path,
+                    "JPEG",
+                    quality=self._jpeg_quality,
+                    optimize=False,
+                    progressive=False,
+                )
             return shot_name
         except Exception:
             logger.debug("Screenshot capture failed", exc_info=True)
             return ""
+
+    def _drain_shot_timers(self) -> None:
+        deadline = time.monotonic() + 5.0
+        while True:
+            with self._lock:
+                timers = [t for t in self._shot_timers if t.is_alive()]
+                self._shot_timers = timers
+            if not timers or time.monotonic() >= deadline:
+                return
+            for timer in timers:
+                timer.join(timeout=0.5)
+
+    def _shot_name(self, seq: int, event_type: str, offset: float) -> str:
+        return (
+            f"{seq:06d}_{self._safe_token(event_type)}_"
+            f"{self._format_offset(offset).replace(':', '-')}.{self._screenshot_format}"
+        )
 
     @staticmethod
     def _format_offset(seconds: float) -> str:

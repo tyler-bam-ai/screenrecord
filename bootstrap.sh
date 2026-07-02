@@ -408,6 +408,7 @@ recording:
   segment_duration: ${SEGMENT_DURATION}
   output_dir: "${INSTALL_DIR}/recordings"
   audio_device: ""
+  capture_cursor: true
 
 google_drive:
   credentials_file: "${INSTALL_DIR}/credentials.json"
@@ -426,6 +427,17 @@ analysis:
   gemini_api_key: "${GEMINI_API_KEY}"
   xai_api_key: "${XAI_API_KEY}"
   openrouter_api_key: "${OPENROUTER_API_KEY}"
+
+input_monitor:
+  enabled: true
+  capture_keystroke_text: true
+  screenshot_min_interval: 0.0
+  keyboard_screenshot_debounce_sec: 1.0
+  keyboard_text_max_chars: 160
+  click_screenshot_delay_sec: 0.15
+  screenshot_format: "jpg"
+  screenshot_jpeg_quality: 78
+  screenshot_max_width: 2560
 
 google_sheets:
   sheet_id: "${GSHEET_ID}"

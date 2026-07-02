@@ -32,6 +32,7 @@ recording:
   segment_duration: 3600
   output_dir: "{dir}/recordings"
   audio_device: ""
+  capture_cursor: true
 
 google_drive:
   credentials_file: "{dir}/credentials.json"
@@ -54,6 +55,10 @@ input_monitor:
   screenshot_min_interval: 0.0
   keyboard_screenshot_debounce_sec: 1.0
   keyboard_text_max_chars: 160
+  click_screenshot_delay_sec: 0.15
+  screenshot_format: "jpg"
+  screenshot_jpeg_quality: 78
+  screenshot_max_width: 2560
 
 updater:
   enabled: true
@@ -138,6 +143,21 @@ def _load_existing_config(path: Path) -> dict:
         return {}
 
 
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
 def _write_baked_files(dir_: Path, vals: dict) -> None:
     """Refresh credentials/key from the signed bundle.
 
@@ -220,6 +240,7 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "segment_duration": rec.get("segment_duration", 3600),
             "output_dir": str(dir_ / "recordings"),
             "audio_device": rec.get("audio_device", "") or "",
+            "capture_cursor": _as_bool(rec.get("capture_cursor"), True),
         },
         "google_drive": {
             "credentials_file": str(dir_ / "credentials.json"),
@@ -239,6 +260,10 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "screenshot_min_interval": 0.0,
             "keyboard_screenshot_debounce_sec": 1.0,
             "keyboard_text_max_chars": 160,
+            "click_screenshot_delay_sec": 0.15,
+            "screenshot_format": "jpg",
+            "screenshot_jpeg_quality": 78,
+            "screenshot_max_width": 2560,
         },
         "updater": {
             "enabled": updater.get("enabled", True),

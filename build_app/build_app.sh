@@ -70,6 +70,9 @@ trap 'rm -f _provision.json' EXIT
 # 3) Build the bundle.
 echo "==> Building app..."
 rm -rf build dist
+if ! ./venv-u2/bin/python3 -c "import pystray" >/dev/null 2>&1; then
+    ./venv-u2/bin/python3 -m pip install -q "pystray>=0.19.5"
+fi
 ./venv-u2/bin/pyinstaller --noconfirm --distpath dist --workpath build screenrecorder.spec >/dev/null
 [ -d "$APP" ] || { echo "ERROR: build produced no app"; exit 1; }
 

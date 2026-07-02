@@ -63,6 +63,21 @@ def hidden_subprocess_kwargs() -> Dict[str, Any]:
     return kwargs
 
 
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
 # ---------------------------------------------------------------------------
 # FFmpeg availability
 # ---------------------------------------------------------------------------
@@ -100,7 +115,7 @@ def check_screen_recording_permission() -> bool:
                 "-f", "avfoundation",
                 "-pixel_format", "uyvy422",
                 "-framerate", "30",
-                "-capture_cursor", "1",
+                "-capture_cursor", "0",
                 "-i", f"{screen_idx}:none",
                 "-t", "1",
                 "-vf", "fps=5",
@@ -271,6 +286,7 @@ def build_ffmpeg_command(
     crf: int = recording_config.get("crf", 28)
     segment_duration: int = recording_config.get("segment_duration", 3600)
     audio_device: str = recording_config.get("audio_device", "")
+    capture_cursor = _config_bool(recording_config.get("capture_cursor"), True)
 
     current_os = detect_os()
 
@@ -280,6 +296,7 @@ def build_ffmpeg_command(
             crf=crf,
             segment_duration=segment_duration,
             audio_device=audio_device,
+            capture_cursor=capture_cursor,
             output_path=output_path,
         )
     else:
@@ -288,6 +305,7 @@ def build_ffmpeg_command(
             crf=crf,
             segment_duration=segment_duration,
             audio_device=audio_device,
+            capture_cursor=capture_cursor,
             output_path=output_path,
         )
 
@@ -301,6 +319,7 @@ def _build_macos_command(
     crf: int,
     segment_duration: int,
     audio_device: str,
+    capture_cursor: bool,
     output_path: str,
 ) -> List[str]:
     """Construct the FFmpeg invocation for macOS (AVFoundation).
@@ -321,7 +340,7 @@ def _build_macos_command(
         "-f", "avfoundation",
         "-pixel_format", "uyvy422",
         "-framerate", "30",
-        "-capture_cursor", "1",
+        "-capture_cursor", "1" if capture_cursor else "0",
     ]
 
     if audio_device:
@@ -357,12 +376,18 @@ def _build_windows_command(
     crf: int,
     segment_duration: int,
     audio_device: str,
+    capture_cursor: bool,
     output_path: str,
 ) -> List[str]:
     """Construct the FFmpeg invocation for Windows (gdigrab + dshow)."""
     cmd: List[str] = ["ffmpeg", "-y"]
 
-    cmd += ["-f", "gdigrab", "-framerate", str(fps), "-i", "desktop"]
+    cmd += [
+        "-f", "gdigrab",
+        "-framerate", str(fps),
+        "-draw_mouse", "1" if capture_cursor else "0",
+        "-i", "desktop",
+    ]
 
     if audio_device:
         cmd += ["-f", "dshow", "-i", f"audio={audio_device}"]

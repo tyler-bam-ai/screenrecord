@@ -11,7 +11,7 @@ exec(open("../screenrecord/version.py", encoding="utf-8").read(), _version_ns)
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("googleapiclient", "google_auth_httplib2", "google.auth",
             "google_auth_oauthlib", "google", "cryptography",
-            "pynput", "mss", "PIL"):
+            "pynput", "mss", "PIL", "pystray"):
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
@@ -29,6 +29,7 @@ hiddenimports += [
     # misses these, so name them explicitly or input capture silently no-ops.
     "pynput.keyboard._darwin", "pynput.mouse._darwin", "pynput._util.darwin",
     "mss.darwin",
+    "pystray._darwin",
 ]
 
 # Bundle the static ffmpeg next to the executable (Contents/MacOS).

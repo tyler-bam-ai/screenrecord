@@ -6,13 +6,14 @@ Google Drive, analyzes their content, and indexes results for retrieval.
 """
 
 import logging
+import json
 import os
 import queue
 import signal
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -25,6 +26,11 @@ CAPTURE_STALL_GRACE_SECONDS = 15 * 60
 
 
 logger = logging.getLogger(__name__)
+
+
+def _iter_screenshot_files(directory: Path):
+    for pattern in ("*.png", "*.jpg", "*.jpeg"):
+        yield from directory.glob(pattern)
 
 
 class ScreenRecordService:
@@ -57,6 +63,7 @@ class ScreenRecordService:
         self._screen_capture_verified: bool = False
         self._last_health_diagnostic_at: Dict[str, float] = {}
         self._stopping_lock = threading.RLock()
+        self._component_lock = threading.RLock()
         self._stop_started = threading.Event()
         self._shutdown_complete = threading.Event()
 
@@ -65,6 +72,7 @@ class ScreenRecordService:
         self._update_thread: Optional[threading.Thread] = None
         self._command_thread: Optional[threading.Thread] = None
         self._recording_retry_thread: Optional[threading.Thread] = None
+        self._pause_timer_thread: Optional[threading.Thread] = None
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -102,6 +110,10 @@ class ScreenRecordService:
         return Path.home() / ".screenrecord" / ".paused"
 
     @staticmethod
+    def _pause_until_path() -> Path:
+        return Path.home() / ".screenrecord" / "pause_until.json"
+
+    @staticmethod
     def _is_paused() -> bool:
         return ScreenRecordService._paused_flag_path().exists()
 
@@ -112,6 +124,62 @@ class ScreenRecordService:
             flag.touch()
         elif flag.exists():
             flag.unlink()
+
+    @classmethod
+    def _write_pause_until(cls, expires_at: datetime, minutes: int) -> None:
+        path = cls._pause_until_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "duration_minutes": minutes,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+
+    @classmethod
+    def _read_pause_until(cls) -> Optional[datetime]:
+        path = cls._pause_until_path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            expires = datetime.fromisoformat(
+                str(data.get("expires_at", "")).replace("Z", "+00:00")
+            )
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            return expires
+        except Exception:
+            logger.warning("Invalid pause_until.json; clearing timed pause.", exc_info=True)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+
+    @classmethod
+    def _clear_pause_until(cls) -> None:
+        try:
+            cls._pause_until_path().unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug("Could not remove pause_until.json", exc_info=True)
+
+    @classmethod
+    def _clear_expired_pause(cls) -> bool:
+        expires = cls._read_pause_until()
+        if expires is None:
+            return False
+        if datetime.now(timezone.utc) < expires:
+            return False
+        cls._clear_pause_until()
+        cls._set_paused(False)
+        return True
 
     @staticmethod
     def _command_is_stale(timestamp: Optional[str]) -> bool:
@@ -137,6 +205,7 @@ class ScreenRecordService:
         """Initialize all components and start the recording pipeline."""
         employee_name = self.config.get("employee_name", "Unknown")
         computer_name = self.config.get("computer_name", "Unknown")
+        self._clear_expired_pause()
         paused = self._is_paused()
 
         self._upload_diagnostics_once("startup")
@@ -257,6 +326,8 @@ class ScreenRecordService:
             )
             self._command_thread.start()
             logger.info("Command poller started")
+
+        self._start_pause_timer_thread()
 
         if not paused:
             if not self._start_recording_components():
@@ -583,6 +654,73 @@ class ScreenRecordService:
         except Exception:
             logger.exception("Failed to update machine status")
 
+    def pause_for_minutes(self, minutes: int) -> bool:
+        """Pause local capture for a fixed short break, then auto-resume."""
+        if minutes not in (5, 10, 15, 30):
+            logger.warning("Ignoring unsupported local pause duration: %s", minutes)
+            return False
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        logger.info("Local timed pause requested for %d minutes.", minutes)
+        with self._component_lock:
+            self._write_pause_until(expires_at, minutes)
+            self._set_paused(True)
+            if self.heartbeat:
+                self.heartbeat.set_status(f"paused until {expires_at.isoformat()}")
+            if self.compliance:
+                self.compliance.log_event("security_event", {
+                    "event": "local_timed_pause",
+                    "duration_minutes": minutes,
+                    "expires_at": expires_at.isoformat(),
+                })
+            self._pause_recording_components()
+        self._update_machine_status_once()
+        return True
+
+    def _pause_recording_components(self) -> None:
+        """Stop only capture components; keep heartbeat, updater, and commands alive."""
+        if self.input_monitor is not None:
+            try:
+                self.input_monitor.stop()
+            except Exception:
+                logger.exception("Error stopping input monitor for local pause")
+            self.input_monitor = None
+        if self.recorder is not None and getattr(self.recorder, "is_recording", False):
+            try:
+                self.recorder.stop()
+            except Exception:
+                logger.exception("Error stopping recorder for local pause")
+
+    def _start_pause_timer_thread(self) -> None:
+        if self._pause_timer_thread is not None and self._pause_timer_thread.is_alive():
+            return
+        self._pause_timer_thread = threading.Thread(
+            target=self._pause_timer_loop,
+            name="pause-timer",
+            daemon=True,
+        )
+        self._pause_timer_thread.start()
+
+    def _pause_timer_loop(self) -> None:
+        while not self.stop_event.wait(timeout=5):
+            if not self._is_paused():
+                continue
+            expires = self._read_pause_until()
+            if expires is None or datetime.now(timezone.utc) < expires:
+                continue
+            logger.info("Timed pause expired; resuming capture.")
+            with self._component_lock:
+                self._clear_pause_until()
+                self._set_paused(False)
+                if self.compliance:
+                    self.compliance.log_event("security_event", {
+                        "event": "local_timed_pause_expired",
+                        "expires_at": expires.isoformat(),
+                    })
+                if not (self.recorder is not None and getattr(self.recorder, "is_recording", False)):
+                    if not self._start_recording_components():
+                        self._start_recording_retry_thread()
+                self._update_machine_status_once()
+
     def _start_recording_components(self) -> bool:
         """Try to start capture. Failure keeps the agent alive for dashboarding."""
         if self._recording_blocked_reason == "invalid_encryption_key":
@@ -811,15 +949,18 @@ class ScreenRecordService:
                     self.sheets_backend.mark_command_executed(cmd["row_number"])
                     if command == "restart":
                         logger.info("Restarting service per remote command...")
+                        self._clear_pause_until()
                         self._set_paused(False)
                         self.stop()
                         os.execv(sys.executable, [sys.executable] + sys.argv)
                     elif command == "stop":
                         logger.info("Pausing service per remote command...")
+                        self._clear_pause_until()
                         self._set_paused(True)
                         self.stop()
                     elif command == "start":
                         logger.info("Starting recording per remote command...")
+                        self._clear_pause_until()
                         self._set_paused(False)
                         self.stop()
                         os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1124,8 +1265,8 @@ class ScreenRecordService:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(events_file, events_file.name)
                 if shots_dir.is_dir():
-                    for png in sorted(shots_dir.glob("*.png")):
-                        zf.write(png, f"{shots_dir.name}/{png.name}")
+                    for shot in sorted(_iter_screenshot_files(shots_dir)):
+                        zf.write(shot, f"{shots_dir.name}/{shot.name}")
         except Exception:
             logger.exception("Failed to bundle input events for %s", stem)
             return
@@ -1160,8 +1301,8 @@ class ScreenRecordService:
                 pass
         try:
             if shots_dir.is_dir():
-                for png in shots_dir.glob("*.png"):
-                    png.unlink()
+                for shot in _iter_screenshot_files(shots_dir):
+                    shot.unlink()
                 shots_dir.rmdir()
         except OSError:
             pass

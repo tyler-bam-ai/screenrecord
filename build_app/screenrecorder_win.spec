@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_all
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("googleapiclient", "google_auth_httplib2", "google.auth",
             "google_auth_oauthlib", "google", "cryptography",
-            "pynput", "mss", "PIL"):
+            "pynput", "mss", "PIL", "pystray"):
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
