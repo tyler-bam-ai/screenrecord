@@ -1,17 +1,16 @@
-"""User-input ("DOM") capture: mouse clicks and keystrokes, each paired with an
-annotated screenshot and tied back to the video segment it happened in.
+"""User-input ("DOM") capture: mouse clicks and keystrokes tied back to the
+video segment they happened in.
 
-Cross-platform (macOS + Windows) via ``pynput`` for global input events,
-``mss`` for screenshots, and ``Pillow`` for annotating the cursor/click marker.
+Cross-platform (macOS + Windows) via ``pynput`` for global input events. Optional
+screenshots are supported, but disabled by default because the video is the
+source of visual truth and screenshot capture can be expensive on workstations.
 
 For every event we record, into files named after the current video segment:
   * a JSONL line in ``<segment_stem>.events.jsonl`` with:
       - absolute UTC timestamp
       - the video filename and the offset (seconds) into that video
       - event type + details (button/coords for clicks, key text for keys)
-      - the screenshot filename
-  * an image in ``<segment_stem>.events/`` showing the screen with a marker on
-    the cursor (and a stronger marker on a click).
+      - an optional screenshot filename, normally empty
 
 The main service uploads these alongside the encrypted video segment, so a
 reviewer can jump straight to the moment in the video. PHI masking happens in a
@@ -39,7 +38,7 @@ SegmentProvider = Callable[[], Optional[Tuple[str, float]]]
 
 
 class InputMonitor:
-    """Captures input events + annotated screenshots tied to the video."""
+    """Captures input events tied to the video, with optional screenshots."""
 
     def __init__(
         self,
@@ -48,8 +47,13 @@ class InputMonitor:
         output_dir: str,
     ) -> None:
         im = config.get("input_monitor", {})
-        self._enabled: bool = im.get("enabled", False)
-        self._capture_keystroke_text: bool = im.get("capture_keystroke_text", True)
+        self._enabled: bool = self._config_bool(im.get("enabled"), False)
+        self._capture_keystroke_text: bool = self._config_bool(
+            im.get("capture_keystroke_text"), True
+        )
+        self._capture_screenshots: bool = self._config_bool(
+            im.get("capture_screenshots"), False
+        )
         # Minimum seconds between screenshots. Events are still logged when a
         # burst is throttled; only the expensive full-screen image is skipped.
         self._min_interval: float = max(
@@ -109,34 +113,43 @@ class InputMonitor:
             return
         try:
             from pynput import keyboard, mouse  # noqa: F401
-            import mss  # noqa: F401
-            from PIL import Image, ImageDraw  # noqa: F401
         except Exception as exc:
             logger.warning(
-                "Input monitor unavailable (missing pynput/mss/Pillow): %s. "
+                "Input monitor unavailable (missing pynput): %s. "
                 "Continuing without input capture.", exc,
             )
             self._enabled = False
             return
+        if self._capture_screenshots:
+            try:
+                import mss  # noqa: F401
+                from PIL import Image, ImageDraw  # noqa: F401
+            except Exception as exc:
+                logger.warning(
+                    "Input screenshots unavailable (missing mss/Pillow): %s. "
+                    "Continuing with event logging only.", exc,
+                )
+                self._capture_screenshots = False
 
         from pynput import keyboard, mouse
 
         self._events_dir.mkdir(parents=True, exist_ok=True)
         self._running = True
-        self._shot_stop.clear()
-        self._shot_worker = threading.Thread(
-            target=self._screenshot_worker,
-            name="input-screenshot-worker",
-            daemon=True,
-        )
-        self._shot_worker.start()
+        if self._capture_screenshots:
+            self._shot_stop.clear()
+            self._shot_worker = threading.Thread(
+                target=self._screenshot_worker,
+                name="input-screenshot-worker",
+                daemon=True,
+            )
+            self._shot_worker.start()
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
         self._mouse_listener.start()
         self._keyboard_listener.start()
         logger.info(
-            "Input monitor started (keystroke_text=%s, min_interval=%.2fs).",
-            self._capture_keystroke_text, self._min_interval,
+            "Input monitor started (keystroke_text=%s, screenshots=%s, min_interval=%.2fs).",
+            self._capture_keystroke_text, self._capture_screenshots, self._min_interval,
         )
 
     def stop(self) -> None:
@@ -286,7 +299,10 @@ class InputMonitor:
 
         with self._lock:
             now = time.monotonic()
-            take_shot = (now - self._last_shot) >= self._min_interval
+            take_shot = (
+                self._capture_screenshots
+                and (now - self._last_shot) >= self._min_interval
+            )
             self._seq += 1
             seq = self._seq
             if take_shot:
@@ -322,7 +338,9 @@ class InputMonitor:
             )
             return
 
-        if force_screenshot and self._min_interval > 0:
+        if force_screenshot and not self._capture_screenshots:
+            record["screenshot_skipped"] = "disabled"
+        elif force_screenshot and self._min_interval > 0:
             record["screenshot_skipped"] = "rate_limited"
         self._write_record(stem, record)
 
@@ -395,7 +413,7 @@ class InputMonitor:
             with open(events_file, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record) + "\n")
         except OSError:
-            logger.debug("Could not write input event for %s", seg_name)
+            logger.debug("Could not write input event for %s", stem)
 
     def _capture_screenshot(
         self,
@@ -501,3 +519,19 @@ class InputMonitor:
         for line in lines:
             draw.text((padding, y), line, fill=(255, 255, 255, 255))
             y += line_height
+
+    @staticmethod
+    def _config_bool(value, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "n", "off"}:
+                return False
+        return default

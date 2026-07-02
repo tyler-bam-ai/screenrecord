@@ -52,6 +52,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "input_monitor": {
         "enabled": True,
         "capture_keystroke_text": True,
+        "capture_screenshots": False,
         "screenshot_min_interval": 0.35,
         "keyboard_screenshot_debounce_sec": 1.0,
         "keyboard_text_max_chars": 160,
