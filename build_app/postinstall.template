@@ -125,7 +125,9 @@ start_updater_daemon() {
     touch /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
     chmod 644 /Library/Logs/ScreenRecorder/updater.log "$SHARED_DIR/ScreenRecorder_updater.log" 2>/dev/null || true
     if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ]; then
-        echo "Skipping updater LaunchDaemon reload during helper-driven install."
+        echo "Scheduling updater LaunchDaemon reload after helper-driven install."
+        write_updater_status "updated" "Installed package; updater daemon reload scheduled."
+        /usr/bin/nohup /bin/bash -c 'sleep 20; /bin/launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true; /bin/launchctl bootstrap system /Library/LaunchDaemons/ai.bam.screenrecord.updater.plist 2>/dev/null || true; /bin/launchctl kickstart -k system/ai.bam.screenrecord.updater 2>/dev/null || true' >/dev/null 2>&1 &
         return
     fi
     launchctl bootout system/ai.bam.screenrecord.updater 2>/dev/null || true
