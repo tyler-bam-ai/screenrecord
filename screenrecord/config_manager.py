@@ -52,13 +52,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "input_monitor": {
         "enabled": True,
         "capture_keystroke_text": True,
-        "screenshot_min_interval": 0.0,
+        "screenshot_min_interval": 0.35,
         "keyboard_screenshot_debounce_sec": 1.0,
         "keyboard_text_max_chars": 160,
         "click_screenshot_delay_sec": 0.15,
         "screenshot_format": "jpg",
-        "screenshot_jpeg_quality": 78,
-        "screenshot_max_width": 2560,
+        "screenshot_jpeg_quality": 60,
+        "screenshot_max_width": 1600,
+        "screenshot_queue_max": 2,
     },
     "updater": {
         "enabled": True,

@@ -24,6 +24,7 @@ disables itself and logs a warning rather than crashing the recorder.
 import json
 import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -49,8 +50,11 @@ class InputMonitor:
         im = config.get("input_monitor", {})
         self._enabled: bool = im.get("enabled", False)
         self._capture_keystroke_text: bool = im.get("capture_keystroke_text", True)
-        # Minimum seconds between screenshots (0 = one per event, full fidelity).
-        self._min_interval: float = float(im.get("screenshot_min_interval", 0.0))
+        # Minimum seconds between screenshots. Events are still logged when a
+        # burst is throttled; only the expensive full-screen image is skipped.
+        self._min_interval: float = max(
+            0.0, float(im.get("screenshot_min_interval", 0.35))
+        )
         # Keyboard screenshots are debounced so normal typing produces one
         # after-typing screenshot instead of one image per letter.
         self._keyboard_debounce: float = max(
@@ -68,10 +72,13 @@ class InputMonitor:
         if self._screenshot_format not in ("jpg", "png"):
             self._screenshot_format = "jpg"
         self._jpeg_quality: int = min(
-            95, max(40, int(im.get("screenshot_jpeg_quality", 78)))
+            95, max(40, int(im.get("screenshot_jpeg_quality", 60)))
         )
         self._screenshot_max_width: int = max(
-            0, int(im.get("screenshot_max_width", 2560))
+            0, int(im.get("screenshot_max_width", 1600))
+        )
+        self._screenshot_queue_max: int = max(
+            1, int(im.get("screenshot_queue_max", 2))
         )
 
         self._segment_provider = segment_provider
@@ -81,7 +88,7 @@ class InputMonitor:
         self._keyboard_listener = None
         self._lock = threading.Lock()
         self._seq = 0
-        self._last_shot = 0.0
+        self._last_shot = -self._min_interval
         self._running = False
         self._key_timer: Optional[threading.Timer] = None
         self._pending_keys: List[str] = []
@@ -89,6 +96,11 @@ class InputMonitor:
         self._pending_key_last_at: Optional[float] = None
         self._pending_key_segment: Optional[Tuple[str, float]] = None
         self._shot_timers: List[threading.Timer] = []
+        self._shot_queue: "queue.Queue[dict]" = queue.Queue(
+            maxsize=self._screenshot_queue_max
+        )
+        self._shot_worker: Optional[threading.Thread] = None
+        self._shot_stop = threading.Event()
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -111,6 +123,13 @@ class InputMonitor:
 
         self._events_dir.mkdir(parents=True, exist_ok=True)
         self._running = True
+        self._shot_stop.clear()
+        self._shot_worker = threading.Thread(
+            target=self._screenshot_worker,
+            name="input-screenshot-worker",
+            daemon=True,
+        )
+        self._shot_worker.start()
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
         self._mouse_listener.start()
@@ -130,7 +149,7 @@ class InputMonitor:
             except Exception:
                 pass
         self._cancel_key_timer()
-        self._drain_shot_timers()
+        self._stop_screenshot_worker()
         logger.info("Input monitor stopped.")
 
     # ------------------------------------------------------------------
@@ -267,7 +286,7 @@ class InputMonitor:
 
         with self._lock:
             now = time.monotonic()
-            take_shot = force_screenshot or (now - self._last_shot) >= self._min_interval
+            take_shot = (now - self._last_shot) >= self._min_interval
             self._seq += 1
             seq = self._seq
             if take_shot:
@@ -288,49 +307,87 @@ class InputMonitor:
             "seq": seq,
         }
 
-        if take_shot and screenshot_delay > 0:
-            def _finish_later() -> None:
-                try:
-                    actual = self._capture_screenshot(
-                        stem=stem,
-                        shot_name=shot_name,
-                        seq=seq,
-                        event_type=event_type,
-                        offset=offset,
-                        ts_utc=ts_utc,
-                        cursor=cursor,
-                        emphasize=emphasize,
-                    )
-                    if not actual:
-                        record["screenshot"] = ""
-                    self._write_record(stem, record)
-                finally:
-                    with self._lock:
-                        self._shot_timers = [
-                            t for t in self._shot_timers if t.is_alive()
-                        ]
-
-            timer = threading.Timer(screenshot_delay, _finish_later)
-            timer.daemon = True
-            with self._lock:
-                self._shot_timers.append(timer)
-            timer.start()
-            return
-
         if take_shot:
-            actual = self._capture_screenshot(
+            self._enqueue_screenshot(
                 stem=stem,
                 shot_name=shot_name,
+                record=record,
                 seq=seq,
                 event_type=event_type,
                 offset=offset,
                 ts_utc=ts_utc,
                 cursor=cursor,
                 emphasize=emphasize,
+                delay=screenshot_delay,
             )
-            if not actual:
-                record["screenshot"] = ""
+            return
+
+        if force_screenshot and self._min_interval > 0:
+            record["screenshot_skipped"] = "rate_limited"
         self._write_record(stem, record)
+
+    def _enqueue_screenshot(
+        self,
+        *,
+        stem: str,
+        shot_name: str,
+        record: dict,
+        seq: int,
+        event_type: str,
+        offset: float,
+        ts_utc: str,
+        cursor,
+        emphasize: bool,
+        delay: float,
+    ) -> None:
+        task = {
+            "due_at": time.monotonic() + max(0.0, delay),
+            "stem": stem,
+            "shot_name": shot_name,
+            "record": record,
+            "seq": seq,
+            "event_type": event_type,
+            "offset": offset,
+            "ts_utc": ts_utc,
+            "cursor": cursor,
+            "emphasize": emphasize,
+        }
+        try:
+            self._shot_queue.put_nowait(task)
+        except queue.Full:
+            record["screenshot"] = ""
+            record["screenshot_skipped"] = "queue_full"
+            self._write_record(stem, record)
+
+    def _screenshot_worker(self) -> None:
+        while not self._shot_stop.is_set() or not self._shot_queue.empty():
+            try:
+                task = self._shot_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                due_at = float(task.get("due_at", 0.0))
+                while not self._shot_stop.is_set():
+                    remaining = due_at - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(remaining, 0.1))
+                record = task["record"]
+                actual = self._capture_screenshot(
+                    stem=task["stem"],
+                    shot_name=task["shot_name"],
+                    seq=task["seq"],
+                    event_type=task["event_type"],
+                    offset=task["offset"],
+                    ts_utc=task["ts_utc"],
+                    cursor=task["cursor"],
+                    emphasize=task["emphasize"],
+                )
+                if not actual:
+                    record["screenshot"] = ""
+                self._write_record(task["stem"], record)
+            finally:
+                self._shot_queue.task_done()
 
     def _write_record(self, stem: str, record: dict) -> None:
         try:
@@ -405,16 +462,14 @@ class InputMonitor:
             logger.debug("Screenshot capture failed", exc_info=True)
             return ""
 
-    def _drain_shot_timers(self) -> None:
-        deadline = time.monotonic() + 5.0
-        while True:
-            with self._lock:
-                timers = [t for t in self._shot_timers if t.is_alive()]
-                self._shot_timers = timers
-            if not timers or time.monotonic() >= deadline:
-                return
-            for timer in timers:
-                timer.join(timeout=0.5)
+    def _stop_screenshot_worker(self) -> None:
+        self._shot_stop.set()
+        deadline = time.monotonic() + 3.0
+        while self._shot_worker is not None and self._shot_worker.is_alive():
+            if time.monotonic() >= deadline:
+                break
+            self._shot_worker.join(timeout=0.25)
+        self._shot_worker = None
 
     def _shot_name(self, seq: int, event_type: str, offset: float) -> str:
         return (
