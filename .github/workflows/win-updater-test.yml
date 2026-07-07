@@ -1,0 +1,25 @@
+name: Windows updater E2E test
+
+# Real end-to-end proof that the self-updater applies on actual Windows:
+# builds real console exes, locks one (as a running exe does), runs the SHIPPED
+# apply script, and asserts the version flips 1.0.21 -> 1.0.25. Manual trigger.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "screenrecord/release_updater.py"
+      - "tests/win_update_e2e.ps1"
+      - "tests/render_apply_script.py"
+      - ".github/workflows/win-updater-test.yml"
+
+jobs:
+  updater-e2e:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run real Windows self-update E2E test
+        shell: powershell
+        run: .\tests\win_update_e2e.ps1
