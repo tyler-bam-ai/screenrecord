@@ -790,6 +790,11 @@ class ScreenRecordService:
                     permission_alert.maybe_alert(
                         self.config, out_dir, logger,
                         input_started=self.input_monitor is not None)
+                    # Native Input Monitoring prompt is unreliable from a
+                    # background agent, so proactively open its settings pane
+                    # until a keystroke is actually captured.
+                    permission_alert.prompt_input_monitoring_setup(
+                        self.config, logger)
                 except Exception:
                     logger.debug("permission alert (startup) failed", exc_info=True)
 
@@ -935,14 +940,21 @@ class ScreenRecordService:
                 if im is not None:
                     try:
                         clicks, keys = im.capture_counts()
-                        if clicks >= 20 and keys == 0:
+                        from . import permission_alert
+                        out_dir = self.config.get("recording", {}).get(
+                            "output_dir", "recordings")
+                        if keys > 0:
+                            # ground truth: Input Monitoring IS effective —
+                            # stop nagging forever
+                            permission_alert.mark_input_monitoring_confirmed()
+                        elif clicks >= 20:
                             perms = ("MISSING: Input Monitoring "
                                      "(no keystrokes captured despite activity)")
-                            from . import permission_alert
-                            out_dir = self.config.get("recording", {}).get(
-                                "output_dir", "recordings")
                             permission_alert.alert_missing(
                                 self.config, out_dir, logger, "Input Monitoring")
+                        # keep re-opening the settings pane until confirmed
+                        permission_alert.prompt_input_monitoring_setup(
+                            self.config, logger)
                     except Exception:
                         logger.debug("empirical input-monitor check failed",
                                      exc_info=True)

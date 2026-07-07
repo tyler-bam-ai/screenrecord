@@ -113,6 +113,56 @@ def maybe_alert(config: dict, output_dir: str, logger,
     return "ok"
 
 
+# Ground-truth flag: set the first time ANY keystroke is captured, proving
+# Input Monitoring is effective. Stable location (survives log/recordings sweeps).
+_IM_CONFIRMED = Path.home() / ".screenrecord" / ".input_monitoring_confirmed"
+
+
+def input_monitoring_confirmed() -> bool:
+    return _IM_CONFIRMED.exists()
+
+
+def mark_input_monitoring_confirmed() -> None:
+    try:
+        _IM_CONFIRMED.parent.mkdir(parents=True, exist_ok=True)
+        _IM_CONFIRMED.write_text("1")
+    except OSError:
+        pass
+
+
+_IM_PROMPT_STATE = Path.home() / ".screenrecord" / ".im_prompt_state.json"
+
+
+def prompt_input_monitoring_setup(config: dict, logger) -> str:
+    """The native Input Monitoring prompt does NOT reliably fire from a
+    background LaunchAgent, so proactively open the Input Monitoring settings
+    pane with an explanatory dialog. Shown (throttled) until a keystroke is ever
+    captured (then mark_input_monitoring_confirmed silences it forever)."""
+    im = config.get("input_monitor", {})
+    if not im.get("enabled", False) or not im.get("permission_alert", True):
+        return "disabled"
+    if sys.platform != "darwin" or input_monitoring_confirmed():
+        return "confirmed-or-na"
+    repeat_min = float(im.get("permission_alert_repeat_min", 60))
+    try:
+        last = json.loads(_IM_PROMPT_STATE.read_text()).get("last", 0)
+    except Exception:
+        last = 0
+    if (time.time() - last) < repeat_min * 60:
+        return "throttled"
+    threading.Thread(target=_show_mac_alert,
+                     args=("MISSING: Input Monitoring", logger),
+                     daemon=True).start()
+    try:
+        _IM_PROMPT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        _IM_PROMPT_STATE.write_text(json.dumps({"last": time.time()}))
+    except OSError:
+        pass
+    logger.info("Prompted user to enable Input Monitoring (native prompt "
+                "unreliable from background agent).")
+    return "prompted"
+
+
 def alert_missing(config: dict, output_dir: str, logger, missing_desc: str) -> str:
     """Show the permission dialog because we have GROUND-TRUTH evidence the
     permission is missing (e.g. keystrokes not being captured despite activity),
