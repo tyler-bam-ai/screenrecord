@@ -17,6 +17,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Prefer IPv4 before any Google client is built — frozen builds hit
+# OSError[49] on IPv6-selected Google endpoints (see net_prefer_ipv4).
+from . import net_prefer_ipv4  # noqa: F401  (applies on import)
+
 
 # Commands older than this are ignored on pickup, so a machine that was
 # offline for a long time does not replay an ancient stop/start on boot.
