@@ -5,7 +5,7 @@ set -u
 LABEL="ai.bam.screenrecord.updater"
 EXPECTED_TEAM_ID="A9LNE3KDJ9"
 EXPECTED_BUNDLE_ID="ai.bam.screenrecord"
-MANIFEST_URL="${SCREENRECORDER_MAC_MANIFEST_URL:-https://github.com/tyler-bam-ai/screenrecord/releases/download/mac-latest/update-mac.json}"
+# MANIFEST_URL is resolved from the update channel further down (needs WORK_DIR).
 APP="/Applications/ScreenRecorder.app"
 PKG_ID="ai.bam.screenrecord.pkg"
 WORK_DIR="/Library/Application Support/ScreenRecorder"
@@ -94,9 +94,37 @@ version_gt() {
     }'
 }
 
+version_differs() {
+    version_gt "$1" "$2" || version_gt "$2" "$1"
+}
+
+# --- update channel (canary vs stable) -----------------------------------
+# A machine marked canary polls the mac-canary release so a bad build is caught
+# on a few machines before it's promoted to mac-latest (the fleet's link).
+# Mark a machine canary:  echo canary | sudo tee "$WORK_DIR/update_channel"
+CHANNEL_FILE="$WORK_DIR/update_channel"
+CHANNEL="stable"
+if [ -r "$CHANNEL_FILE" ]; then
+    _c="$(tr -d '[:space:]' < "$CHANNEL_FILE" 2>/dev/null || true)"
+    case "$_c" in canary|stable) CHANNEL="$_c" ;; esac
+fi
+case "$CHANNEL" in canary) TAG="mac-canary" ;; *) TAG="mac-latest" ;; esac
+DEFAULT_URL="https://github.com/tyler-bam-ai/screenrecord/releases/download/$TAG/update-mac.json"
+if [ "$CHANNEL" = "canary" ]; then
+    # channel wins over any baked env override, so a canary machine actually
+    # polls mac-canary (else the canary ring would validate nothing)
+    MANIFEST_URL="$DEFAULT_URL"
+    if [ -n "${SCREENRECORDER_MAC_MANIFEST_URL:-}" ] && \
+       ! printf '%s' "$SCREENRECORDER_MAC_MANIFEST_URL" | grep -q canary; then
+        log "channel=canary overrides baked SCREENRECORDER_MAC_MANIFEST_URL"
+    fi
+else
+    MANIFEST_URL="${SCREENRECORDER_MAC_MANIFEST_URL:-$DEFAULT_URL}"
+fi
+
 LOCAL="$(local_version)"
 write_status "checking" "Checking for update." "" "$LOCAL"
-log "Checking manifest $MANIFEST_URL (local=$LOCAL)"
+log "Checking manifest $MANIFEST_URL (channel=$CHANNEL local=$LOCAL)"
 
 MANIFEST="$UPDATE_DIR/update-mac.json"
 if ! /usr/bin/curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time 120 \
@@ -123,7 +151,8 @@ case "$FORCE" in
     true|TRUE|1|yes|YES) FORCE_NORM="true" ;;
 esac
 
-if [ "$FORCE_NORM" != "true" ] && ! version_gt "$REMOTE" "$LOCAL"; then
+if { [ "$FORCE_NORM" = "true" ] && ! version_differs "$REMOTE" "$LOCAL"; } || \
+   { [ "$FORCE_NORM" != "true" ] && ! version_gt "$REMOTE" "$LOCAL"; }; then
     log "Already up to date (local=$LOCAL remote=$REMOTE)."
     write_status "up_to_date" "Already up to date." "$REMOTE" "$LOCAL"
     rm -f "$TRIGGER" 2>/dev/null || true

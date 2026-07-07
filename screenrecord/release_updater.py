@@ -30,6 +30,14 @@ DEFAULT_WINDOWS_MANIFEST_URL = (
     "windows-latest/update-windows.json"
 )
 DEFAULT_MAC_TRIGGER_PATH = Path("/Users/Shared/ScreenRecorder_update_now")
+
+
+def _windows_manifest_for_channel(channel: str) -> str:
+    """Canary machines poll a separate release tag so a bad build is caught on a
+    few machines before it's promoted to the stable link the fleet follows."""
+    tag = "windows-canary" if channel == "canary" else "windows-latest"
+    return ("https://github.com/tyler-bam-ai/screenrecord/releases/download/"
+            f"{tag}/update-windows.json")
 STATUS_FILENAME = "updater_status.json"
 
 
@@ -89,7 +97,20 @@ class ReleaseUpdater:
         )
         self.local_version = current_platform_version()
         updater_cfg = config.get("updater", {}) if isinstance(config.get("updater"), dict) else {}
-        self.manifest_url = updater_cfg.get("manifest_url") or DEFAULT_WINDOWS_MANIFEST_URL
+        channel = str(updater_cfg.get("channel", "stable")).strip().lower()
+        self.channel = channel if channel in ("stable", "canary") else "stable"
+        explicit = updater_cfg.get("manifest_url")
+        if self.channel == "canary":
+            # Channel MUST win over a baked manifest_url — provisioned configs
+            # (install_windows.ps1, provision.py) hardcode the windows-latest
+            # url, so if it won, a "canary" machine would still poll stable and
+            # the canary ring would validate nothing.
+            self.manifest_url = _windows_manifest_for_channel("canary")
+            if explicit and "canary" not in explicit:
+                logger.warning("channel=canary overrides baked manifest_url %s",
+                               explicit)
+        else:
+            self.manifest_url = explicit or _windows_manifest_for_channel("stable")
         self.check_interval_seconds = int(updater_cfg.get("check_interval_seconds", 3600) or 3600)
         self._staged_script: Optional[Path] = None
         self._status_path = _data_dir() / STATUS_FILENAME

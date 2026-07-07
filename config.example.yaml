@@ -37,6 +37,21 @@ encryption:
   # Leave blank to disable encryption
   key_file: "encryption.key"
 
+# Mouse & keyboard event capture — the workflow signal AND the ground truth the
+# analysis pipeline verifies each video against. Writes a {stem}.events.jsonl
+# sidecar per video, bundled + encrypted as {stem}.events.zip.enc on upload.
+# NOTE: on macOS this also needs the OS Accessibility / Input Monitoring
+# permission granted (push a Mosyle PPPC profile); Windows needs nothing extra.
+input_monitor:
+  enabled: true
+  capture_keystroke_text: true    # keep typed text (PHI is aliased downstream)
+  capture_screenshots: false      # annotated click frames; off = smaller uploads
+  # macOS can't be granted Input Monitoring by MDM (Apple policy), so prompt the
+  # user on-screen with an "Open Settings" button; re-nudge until they grant it.
+  # On Windows this only fires if input capture actually fails to start.
+  permission_alert: true
+  permission_alert_repeat_min: 60
+
 # Video analysis settings
 analysis:
   enabled: true

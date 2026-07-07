@@ -777,6 +777,17 @@ class ScreenRecordService:
                 except Exception:
                     logger.exception("Failed to start input monitor; continuing without it")
                     self.input_monitor = None
+                # Alert the user if macOS input permission is missing (MDM
+                # can't grant it) or Windows capture failed to start.
+                try:
+                    from . import permission_alert
+                    out_dir = self.config.get("recording", {}).get(
+                        "output_dir", "recordings")
+                    permission_alert.maybe_alert(
+                        self.config, out_dir, logger,
+                        input_started=self.input_monitor is not None)
+                except Exception:
+                    logger.debug("permission alert (startup) failed", exc_info=True)
 
             if self._upload_thread is None or not self._upload_thread.is_alive():
                 self._upload_thread = threading.Thread(
@@ -912,6 +923,18 @@ class ScreenRecordService:
                 uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
                 current_status = self._dashboard_status()
                 perms = self._permission_status()
+                # Re-nudge the user on-screen while a needed permission is
+                # still missing (throttled internally to once/hour).
+                if perms != "ok":
+                    try:
+                        from . import permission_alert
+                        out_dir = self.config.get("recording", {}).get(
+                            "output_dir", "recordings")
+                        permission_alert.maybe_alert(
+                            self.config, out_dir, logger,
+                            input_started=self.input_monitor is not None)
+                    except Exception:
+                        logger.debug("permission alert (poll) failed", exc_info=True)
                 if self._recording_blocked_reason and perms == "ok":
                     perms = f"ERROR: {self._recording_blocked_reason}"
                 if self._runtime_health_problem:

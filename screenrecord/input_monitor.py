@@ -47,6 +47,14 @@ class InputMonitor:
         output_dir: str,
     ) -> None:
         im = config.get("input_monitor", {})
+        # Default ON: event sidecars are the analysis pipeline's ground truth.
+        # Safe if the OS permission is missing — start() degrades to no events
+        # (the caller wraps it), it never blocks recording. A machine that must
+        # not capture input sets input_monitor.enabled: false explicitly.
+        # Default OFF: capture must be enabled EXPLICITLY in config (an app
+        # update alone must never start keystroke/mouse capture on a machine
+        # whose config never opted in — a consent/privacy invariant). New
+        # installs set input_monitor.enabled: true via install.py/provision.py.
         self._enabled: bool = self._config_bool(im.get("enabled"), False)
         self._capture_keystroke_text: bool = self._config_bool(
             im.get("capture_keystroke_text"), True
@@ -69,6 +77,11 @@ class InputMonitor:
         )
         self._click_screenshot_delay: float = max(
             0.0, float(im.get("click_screenshot_delay_sec", 0.15))
+        )
+        # Scroll events fire rapidly (trackpad/wheel); coalesce a burst into one
+        # "mouse_scroll" event with summed dx/dy, like keyboard sequences.
+        self._scroll_debounce: float = max(
+            0.1, float(im.get("scroll_debounce_sec", 0.5))
         )
         self._screenshot_format = str(im.get("screenshot_format", "jpg")).lower()
         if self._screenshot_format == "jpeg":
@@ -99,6 +112,8 @@ class InputMonitor:
         self._pending_key_started_at: Optional[float] = None
         self._pending_key_last_at: Optional[float] = None
         self._pending_key_segment: Optional[Tuple[str, float]] = None
+        self._scroll_timer: Optional[threading.Timer] = None
+        self._pending_scroll: Optional[dict] = None
         self._shot_timers: List[threading.Timer] = []
         self._shot_queue: "queue.Queue[dict]" = queue.Queue(
             maxsize=self._screenshot_queue_max
@@ -143,7 +158,8 @@ class InputMonitor:
                 daemon=True,
             )
             self._shot_worker.start()
-        self._mouse_listener = mouse.Listener(on_click=self._on_click)
+        self._mouse_listener = mouse.Listener(
+            on_click=self._on_click, on_scroll=self._on_scroll)
         self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
         self._mouse_listener.start()
         self._keyboard_listener.start()
@@ -154,6 +170,7 @@ class InputMonitor:
 
     def stop(self) -> None:
         self._flush_keyboard_sequence(reason="stop")
+        self._flush_scroll(reason="stop")   # flush before _running goes false
         self._running = False
         for lst in (self._mouse_listener, self._keyboard_listener):
             try:
@@ -171,7 +188,9 @@ class InputMonitor:
     def _on_click(self, x, y, button, pressed) -> None:
         if not pressed:
             return  # record button-down only
+        # flush any in-progress typing/scrolling so event order is preserved
         self._flush_keyboard_sequence(reason="before_click")
+        self._flush_scroll(reason="before_click")
         self._record(
             event_type="mouse_click",
             details={"x": int(x), "y": int(y), "button": str(button)},
@@ -179,6 +198,67 @@ class InputMonitor:
             emphasize=True,
             force_screenshot=True,
             screenshot_delay=self._click_screenshot_delay,
+        )
+
+    def _on_scroll(self, x, y, dx, dy) -> None:
+        """Coalesce a scroll burst; a debounce timer flushes one event with the
+        summed delta (dy<0 = scrolled down). Scrolling through long forms/lists
+        is a core workflow action the 1fps video otherwise misses."""
+        if not self._running:
+            return
+        seg = None
+        try:
+            seg = self._segment_provider()
+        except Exception:
+            pass
+        if not seg:
+            return
+        now = time.monotonic()
+        with self._lock:
+            if self._pending_scroll is None:
+                self._pending_scroll = {
+                    "dx": 0, "dy": 0, "ticks": 0,
+                    "started_at": now, "segment": seg,
+                }
+            ps = self._pending_scroll
+            ps["dx"] += int(dx)
+            ps["dy"] += int(dy)
+            ps["ticks"] += 1
+            ps["x"], ps["y"] = int(x), int(y)
+            ps["last_at"] = now
+            if self._scroll_timer is not None:
+                self._scroll_timer.cancel()
+            self._scroll_timer = threading.Timer(
+                self._scroll_debounce, self._flush_scroll,
+                kwargs={"reason": "debounce"},
+            )
+            self._scroll_timer.daemon = True
+            self._scroll_timer.start()
+
+    def _flush_scroll(self, reason: str = "debounce") -> None:
+        with self._lock:
+            ps = self._pending_scroll
+            self._pending_scroll = None
+            if self._scroll_timer is not None:
+                self._scroll_timer.cancel()
+                self._scroll_timer = None
+        if not ps:
+            return
+        self._record(
+            event_type="mouse_scroll",
+            details={
+                "x": ps.get("x"), "y": ps.get("y"),
+                "dx": ps["dx"], "dy": ps["dy"], "ticks": ps["ticks"],
+                "duration_sec": round(
+                    max(0.0, ps.get("last_at", ps["started_at"])
+                        - ps["started_at"]), 3),
+                "flush_reason": reason,
+            },
+            cursor=(ps.get("x"), ps.get("y")) if ps.get("x") is not None else None,
+            emphasize=False,
+            allow_screenshot=False,   # never screenshot a scroll burst, and
+                                      # don't consume the click screenshot budget
+            segment=ps["segment"],
         )
 
     def _on_press(self, key) -> None:
@@ -282,6 +362,7 @@ class InputMonitor:
         force_screenshot: bool = False,
         segment: Optional[Tuple[str, float]] = None,
         screenshot_delay: float = 0.0,
+        allow_screenshot: bool = True,
     ) -> None:
         if not self._running:
             return
@@ -300,7 +381,8 @@ class InputMonitor:
         with self._lock:
             now = time.monotonic()
             take_shot = (
-                self._capture_screenshots
+                allow_screenshot
+                and self._capture_screenshots
                 and (now - self._last_shot) >= self._min_interval
             )
             self._seq += 1

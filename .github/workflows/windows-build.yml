@@ -153,16 +153,19 @@ jobs:
             --title "Screen Recorder for Windows $env:GITHUB_REF_NAME" `
             --notes "Unsigned Windows build (gdigrab capture, per-user Run key auto-start). Install with install_windows.ps1."
 
-      - name: Publish static latest release
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/win-v')
+      # SAFETY: builds no longer auto-publish to windows-latest (the whole
+      # fleet). A tagged build only produces the versioned win-v<tag> release
+      # above. Channel promotion is now a deliberate, canary-first step run by
+      # an operator:  release/publish.sh windows <version> canary  (verify) then
+      #               release/publish.sh windows <version> stable
+      # This prevents a bad build from hitting every machine at once (the
+      # 2026-07-02 outage shape). See tools/RELEASE_RUNBOOK.md.
+      - name: (disabled) auto-publish to windows-latest
+        if: false
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view windows-latest 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create windows-latest --title "Screen Recorder for Windows — latest (stable link)" --notes "Stable Windows installer link."
-          }
           gh release upload windows-latest `
             out/ScreenRecorder.exe out/install_windows.ps1 out/update-windows.json `
             --clobber
