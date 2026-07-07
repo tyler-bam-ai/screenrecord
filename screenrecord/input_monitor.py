@@ -134,6 +134,19 @@ class InputMonitor:
         regardless of what the macOS permission API claims."""
         return self._n_clicks, self._n_keys
 
+    def restart(self) -> None:
+        """Recreate the OS event taps to pick up a permission (especially Input
+        Monitoring) granted AFTER the listener first started. Cheap; preserves
+        the capture counters."""
+        try:
+            self.stop()
+        except Exception:
+            logger.debug("input restart: stop failed", exc_info=True)
+        try:
+            self.start()
+        except Exception:
+            logger.debug("input restart: start failed", exc_info=True)
+
     # ------------------------------------------------------------------
     def start(self) -> None:
         if not self._enabled:

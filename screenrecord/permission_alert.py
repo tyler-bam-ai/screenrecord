@@ -118,6 +118,24 @@ def maybe_alert(config: dict, output_dir: str, logger,
 _IM_CONFIRMED = Path.home() / ".screenrecord" / ".input_monitoring_confirmed"
 
 
+_IM_PROMPT_STATE = Path.home() / ".screenrecord" / ".im_prompt_state.json"
+
+
+def _read_im_state() -> dict:
+    try:
+        return json.loads(_IM_PROMPT_STATE.read_text())
+    except Exception:
+        return {}
+
+
+def _write_im_state(d: dict) -> None:
+    try:
+        _IM_PROMPT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        _IM_PROMPT_STATE.write_text(json.dumps(d))
+    except OSError:
+        pass
+
+
 def input_monitoring_confirmed() -> bool:
     return _IM_CONFIRMED.exists()
 
@@ -128,9 +146,30 @@ def mark_input_monitoring_confirmed() -> None:
         _IM_CONFIRMED.write_text("1")
     except OSError:
         pass
+    # capture succeeded — clear the "problem" state so we never restart again
+    try:
+        _IM_PROMPT_STATE.unlink()
+    except OSError:
+        pass
 
 
-_IM_PROMPT_STATE = Path.home() / ".screenrecord" / ".im_prompt_state.json"
+def input_monitoring_restart_due(grace_sec: float = 120) -> bool:
+    """Call while Input Monitoring is unconfirmed but the user IS active (mouse
+    clicks flowing, zero keystrokes). Returns True exactly once, ~grace_sec
+    after the problem was first noticed — long enough for the user to enable it
+    in Settings. The caller then exits so launchd (KeepAlive) relaunches the app
+    and the fresh process re-evaluates the grant (macOS often needs this)."""
+    st = _read_im_state()
+    now = time.time()
+    if not st.get("problem_since"):
+        st["problem_since"] = now
+        _write_im_state(st)
+        return False
+    if now - st["problem_since"] >= grace_sec and not st.get("restart_done"):
+        st["restart_done"] = True
+        _write_im_state(st)
+        return True
+    return False
 
 
 def prompt_input_monitoring_setup(config: dict, logger) -> str:
@@ -144,20 +183,14 @@ def prompt_input_monitoring_setup(config: dict, logger) -> str:
     if sys.platform != "darwin" or input_monitoring_confirmed():
         return "confirmed-or-na"
     repeat_min = float(im.get("permission_alert_repeat_min", 60))
-    try:
-        last = json.loads(_IM_PROMPT_STATE.read_text()).get("last", 0)
-    except Exception:
-        last = 0
-    if (time.time() - last) < repeat_min * 60:
+    st = _read_im_state()
+    if (time.time() - st.get("last", 0)) < repeat_min * 60:
         return "throttled"
     threading.Thread(target=_show_mac_alert,
                      args=("MISSING: Input Monitoring", logger),
                      daemon=True).start()
-    try:
-        _IM_PROMPT_STATE.parent.mkdir(parents=True, exist_ok=True)
-        _IM_PROMPT_STATE.write_text(json.dumps({"last": time.time()}))
-    except OSError:
-        pass
+    st["last"] = time.time()          # merge, don't clobber problem_since
+    _write_im_state(st)
     logger.info("Prompted user to enable Input Monitoring (native prompt "
                 "unreliable from background agent).")
     return "prompted"

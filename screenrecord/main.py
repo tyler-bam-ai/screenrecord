@@ -939,22 +939,30 @@ class ScreenRecordService:
                 im = self.input_monitor
                 if im is not None:
                     try:
-                        clicks, keys = im.capture_counts()
                         from . import permission_alert
-                        out_dir = self.config.get("recording", {}).get(
-                            "output_dir", "recordings")
+                        clicks, keys = im.capture_counts()
                         if keys > 0:
                             # ground truth: Input Monitoring IS effective —
-                            # stop nagging forever
+                            # stop nagging/restarting forever
                             permission_alert.mark_input_monitoring_confirmed()
-                        elif clicks >= 20:
+                        elif not permission_alert.input_monitoring_confirmed():
                             perms = ("MISSING: Input Monitoring "
-                                     "(no keystrokes captured despite activity)")
-                            permission_alert.alert_missing(
-                                self.config, out_dir, logger, "Input Monitoring")
-                        # keep re-opening the settings pane until confirmed
-                        permission_alert.prompt_input_monitoring_setup(
-                            self.config, logger)
+                                     "(no keystrokes captured yet)")
+                            # keep directing the user to the settings pane
+                            permission_alert.prompt_input_monitoring_setup(
+                                self.config, logger)
+                            # self-heal, hands-off: if the user is active with
+                            # the mouse but no keys, the keyboard tap isn't
+                            # effective. Re-create it (picks up a fresh grant);
+                            # if that still doesn't take after a grace period,
+                            # restart the whole process ONCE (launchd relaunches
+                            # via KeepAlive) so a new process re-evaluates TCC.
+                            if clicks >= 3:
+                                im.restart()
+                                if permission_alert.input_monitoring_restart_due():
+                                    logger.info("Restarting service to activate "
+                                                "the Input Monitoring grant.")
+                                    os._exit(0)
                     except Exception:
                         logger.debug("empirical input-monitor check failed",
                                      exc_info=True)
