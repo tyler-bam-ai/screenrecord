@@ -66,7 +66,7 @@ def _granted_screen_recording() -> bool:
             return bool(cg.CGPreflightScreenCaptureAccess())
     except Exception:
         pass
-    return True
+    return False   # fail CLOSED: unknown = treat as missing so it surfaces
 
 
 def _granted_accessibility() -> bool:
@@ -76,10 +76,14 @@ def _granted_accessibility() -> bool:
         return bool(ax.AXIsProcessTrusted())
     except Exception:
         pass
-    return True
+    return False   # fail CLOSED
 
 
 def _granted_input_monitoring() -> bool:
+    # NOTE: IOHIDCheckAccess has proven UNRELIABLE on the frozen build — it has
+    # reported Granted while keystrokes were being silently dropped. The
+    # authoritative signal is actual keystroke capture (input_monitor
+    # capture_counts, checked in main). This stays as a best-effort hint only.
     try:
         iokit = _load("IOKit")
         if hasattr(iokit, "IOHIDCheckAccess"):
@@ -90,7 +94,7 @@ def _granted_input_monitoring() -> bool:
             return iokit.IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     except Exception:
         pass
-    return True
+    return False   # fail CLOSED
 
 
 def _request_screen_recording(log) -> None:

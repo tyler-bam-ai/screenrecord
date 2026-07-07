@@ -927,6 +927,25 @@ class ScreenRecordService:
                 uptime = self.heartbeat.uptime_hours if self.heartbeat else 0
                 current_status = self._dashboard_status()
                 perms = self._permission_status()
+                # GROUND TRUTH for Input Monitoring: the OS API lies on frozen
+                # builds, so trust actual capture. Many clicks (user is active)
+                # with zero keystrokes = the keyboard tap is being dropped =
+                # Input Monitoring not effective, whatever the API claims.
+                im = self.input_monitor
+                if im is not None:
+                    try:
+                        clicks, keys = im.capture_counts()
+                        if clicks >= 20 and keys == 0:
+                            perms = ("MISSING: Input Monitoring "
+                                     "(no keystrokes captured despite activity)")
+                            from . import permission_alert
+                            out_dir = self.config.get("recording", {}).get(
+                                "output_dir", "recordings")
+                            permission_alert.alert_missing(
+                                self.config, out_dir, logger, "Input Monitoring")
+                    except Exception:
+                        logger.debug("empirical input-monitor check failed",
+                                     exc_info=True)
                 # Re-nudge the user on-screen while a needed permission is
                 # still missing (throttled internally to once/hour).
                 if perms != "ok":

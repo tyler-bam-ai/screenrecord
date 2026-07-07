@@ -105,6 +105,12 @@ class InputMonitor:
         self._keyboard_listener = None
         self._lock = threading.Lock()
         self._seq = 0
+        # capture counters — ground truth for whether each OS permission is
+        # actually effective (mouse => Accessibility, keys => Input Monitoring).
+        # The macOS permission API can falsely report "granted" on frozen
+        # builds; actual event flow cannot.
+        self._n_clicks = 0
+        self._n_keys = 0
         self._last_shot = -self._min_interval
         self._running = False
         self._key_timer: Optional[threading.Timer] = None
@@ -120,6 +126,13 @@ class InputMonitor:
         )
         self._shot_worker: Optional[threading.Thread] = None
         self._shot_stop = threading.Event()
+
+    def capture_counts(self) -> Tuple[int, int]:
+        """(#clicks, #key_sequences) captured so far. Ground truth for whether
+        Input Monitoring is EFFECTIVE: many clicks with zero keys means the
+        keyboard tap is being silently dropped (Input Monitoring not granted),
+        regardless of what the macOS permission API claims."""
+        return self._n_clicks, self._n_keys
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -188,6 +201,7 @@ class InputMonitor:
     def _on_click(self, x, y, button, pressed) -> None:
         if not pressed:
             return  # record button-down only
+        self._n_clicks += 1
         # flush any in-progress typing/scrolling so event order is preserved
         self._flush_keyboard_sequence(reason="before_click")
         self._flush_scroll(reason="before_click")
@@ -326,6 +340,7 @@ class InputMonitor:
                 self._key_timer = None
         if not keys:
             return
+        self._n_keys += 1  # ground truth that Input Monitoring is effective
 
         text = "".join(k for k in keys if len(k) == 1)
         if self._keyboard_text_max_chars and len(text) > self._keyboard_text_max_chars:

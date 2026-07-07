@@ -113,6 +113,23 @@ def maybe_alert(config: dict, output_dir: str, logger,
     return "ok"
 
 
+def alert_missing(config: dict, output_dir: str, logger, missing_desc: str) -> str:
+    """Show the permission dialog because we have GROUND-TRUTH evidence the
+    permission is missing (e.g. keystrokes not being captured despite activity),
+    bypassing the unreliable macOS permission API. Throttled + threaded."""
+    im = config.get("input_monitor", {})
+    if not im.get("permission_alert", True) or sys.platform != "darwin":
+        return "disabled"
+    repeat_min = float(im.get("permission_alert_repeat_min", 60))
+    if not _should_show(output_dir, repeat_min):
+        return f"throttled ({missing_desc})"
+    threading.Thread(target=_show_mac_alert,
+                     args=(f"MISSING: {missing_desc}", logger),
+                     daemon=True).start()
+    _mark_shown(output_dir)
+    return f"alerted ({missing_desc})"
+
+
 def _show_mac_alert(status: str, logger) -> None:
     missing = status.replace("MISSING: ", "")
     msg = (
