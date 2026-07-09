@@ -39,6 +39,9 @@ def _windows_manifest_for_channel(channel: str) -> str:
     return ("https://github.com/tyler-bam-ai/screenrecord/releases/download/"
             f"{tag}/update-windows.json")
 STATUS_FILENAME = "updater_status.json"
+# Bound the Windows update download so a stalled connection can't hang the agent.
+DOWNLOAD_READ_TIMEOUT_SECONDS = 45     # abort a dead socket quickly
+DOWNLOAD_DEADLINE_SECONDS = 300        # overall cap on the whole transfer
 
 
 def _now_iso() -> str:
@@ -307,8 +310,17 @@ class ReleaseUpdater:
             self._write_status("downloading", f"Downloading update {version}.", remote_version=version)
             req = Request(url, headers={"User-Agent": "BAM-AI-ScreenRecorder-ReleaseUpdater"})
             hasher = hashlib.sha256()
-            with urlopen(req, timeout=600) as resp, tmp.open("wb") as fh:
+            # Bound the transfer so a stalled/slow connection can NOT hang the
+            # updater: a short per-read timeout aborts a dead socket quickly, and
+            # an overall wall-clock deadline caps the whole download. On timeout
+            # we abort (return None) and the agent keeps recording normally — the
+            # update is simply retried next cycle, never leaving a machine stuck.
+            deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+            with urlopen(req, timeout=DOWNLOAD_READ_TIMEOUT_SECONDS) as resp, tmp.open("wb") as fh:
                 while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(
+                            f"download exceeded {DOWNLOAD_DEADLINE_SECONDS}s deadline")
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
@@ -363,6 +375,7 @@ $Version   = '{version_lit}'
 $StatusDir = Split-Path -Parent $LogPath
 $Status    = Join-Path $StatusDir "updater_status.json"
 $Backup    = "$TargetExe.$PID.old"
+$Lock      = Join-Path (Split-Path -Parent $TargetExe) "updating.lock"
 
 function Log($m) {{
   try {{
@@ -382,6 +395,10 @@ function Stop-Recorder {{
 }}
 
 try {{
+  # Tell the watchdog task an update is legitimately in progress so it does not
+  # relaunch the agent mid-swap (removed in finally, and treated as stale by the
+  # watchdog after a few minutes so a hung swap still triggers recovery).
+  Set-Content -Path $Lock -Value (Get-Date -Format o) -ErrorAction SilentlyContinue
   Log "Applying ScreenRecorder update $Version to $TargetExe (new=$NewExe)"
 
   # 1. Wait for the launching process to exit, then force it if needed.
@@ -448,6 +465,9 @@ catch {{
     elseif (Test-Path -LiteralPath $Backup) {{ Start-Process -FilePath $Backup }}
   }} catch {{ }}
   throw
+}}
+finally {{
+  Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue
 }}
 """
         script.write_text(body, encoding="utf-8")

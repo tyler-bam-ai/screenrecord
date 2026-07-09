@@ -551,6 +551,37 @@ try {
     Unload-UserHiveIfNeeded $target $hiveLoadedByUs
 }
 
+# --- 4b. Watchdog scheduled task ---------------------------------------------
+# Windows has no launchd-KeepAlive equivalent, so if the agent ever stops
+# (crash, or a failed/hung self-update swap) nothing brings it back until the
+# next logon. This task relaunches it within ~3 min. It respects an
+# "updating.lock" the updater writes during a legitimate swap, so it won't fight
+# an in-progress update — but treats a lock older than 8 min as a hung update
+# and recovers anyway.
+$script:InstallPhase = "register_watchdog"
+Invoke-BestEffort "Watchdog task" {
+    $wdScript = Join-Path $installDir "watchdog.ps1"
+    $exeLit = $exeDest.Replace("'", "''")
+    $lockLit = (Join-Path $installDir "updating.lock").Replace("'", "''")
+    $wd = @()
+    $wd += "`$exe = '$exeLit'"
+    $wd += "`$lock = '$lockLit'"
+    $wd += "if (-not (Test-Path -LiteralPath `$exe)) { return }"
+    $wd += "if (Get-Process ScreenRecorder -ErrorAction SilentlyContinue) { return }"
+    $wd += "if (Test-Path -LiteralPath `$lock) { try { if (((Get-Date) - (Get-Item -LiteralPath `$lock).LastWriteTime).TotalMinutes -lt 8) { return } } catch {} }"
+    $wd += "Start-Process -FilePath `$exe"
+    Set-Content -Path $wdScript -Value ($wd -join "`r`n") -Encoding UTF8
+
+    $act = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wdScript`""
+    $trg = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(2)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $prn = New-ScheduledTaskPrincipal -UserId $target.Name -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName "ScreenRecorderWatchdog" -Action $act -Trigger $trg `
+        -Principal $prn -Force -ErrorAction Stop | Out-Null
+    Ok "Watchdog registered (relaunches the agent within ~3 min if it stops)."
+}
+
 # --- 5. Start now if safe -----------------------------------------------------
 $script:InstallPhase = "start_or_defer"
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -565,7 +596,7 @@ if ($NoStart) {
 
 Write-Host ""
 Write-Host "Static exe: $ExeUrl"
-Write-Host "Uninstall for this user: remove HKU\\$($target.Sid)\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ScreenRecordAgent, stop ScreenRecorder, then delete '$installDir' and '$dataDir'."
+Write-Host "Uninstall for this user: schtasks /Delete /TN ScreenRecorderWatchdog /F; remove HKU\\$($target.Sid)\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ScreenRecordAgent, stop ScreenRecorder, then delete '$installDir' and '$dataDir'."
 $script:InstallPhase = "complete"
 Write-InstallDiagnostic "success" $null
 try { Stop-Transcript | Out-Null } catch {}
