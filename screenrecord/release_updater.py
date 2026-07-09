@@ -116,6 +116,8 @@ class ReleaseUpdater:
             self.manifest_url = explicit or _windows_manifest_for_channel("stable")
         self.check_interval_seconds = int(updater_cfg.get("check_interval_seconds", 3600) or 3600)
         self._staged_script: Optional[Path] = None
+        self._staged_exe: Optional[Path] = None
+        self._staged_version: str = ""
         self._status_path = _data_dir() / STATUS_FILENAME
 
     @staticmethod
@@ -194,8 +196,8 @@ class ReleaseUpdater:
         if not new_exe:
             return False
 
-        script = self._write_apply_script(new_exe, remote_version)
-        self._staged_script = script
+        self._staged_exe = new_exe
+        self._staged_version = remote_version
         self._write_status(
             "staged",
             f"Update {remote_version} staged.",
@@ -205,7 +207,40 @@ class ReleaseUpdater:
         return True
 
     def launch_staged_update(self) -> bool:
-        """Launch the staged Windows swapper script. Caller should then exit."""
+        """Signal the watchdog to apply the staged update, then the caller exits.
+
+        We do NOT launch a swapper process here: a PyInstaller-frozen agent runs
+        inside a job object, so a child launched right before os._exit is killed
+        when that job closes (confirmed by windows_updater.log — the helper was
+        launched but never ran, causing an endless update loop). Instead we drop
+        a pending_update.json marker next to the exe and exit; the watchdog
+        scheduled task (which runs OUTSIDE this job) copies the new exe over the
+        now-unlocked old one and restarts it. If the copy ever fails, the watchdog
+        clears the marker and relaunches the current exe — no loop, no strand.
+        """
+        if self.platform != "windows" or self._staged_exe is None:
+            return False
+        try:
+            install_dir = Path(sys.executable).resolve().parent
+            marker = install_dir / "pending_update.json"
+            marker.write_text(
+                json.dumps({"new_exe": str(self._staged_exe),
+                            "version": self._staged_version}),
+                encoding="utf-8",
+            )
+            self._write_status(
+                "applying",
+                "Staged update marked; watchdog will apply it on exit.",
+                remote_version=self._staged_version,
+            )
+            return True
+        except Exception as exc:
+            logger.exception("Failed to mark staged update")
+            self._write_status("apply_launch_failed", str(exc)[:500])
+            return False
+
+    def _legacy_launch_staged_update(self) -> bool:
+        """Unused: the old detached-helper launch (kept for reference)."""
         if self.platform != "windows" or self._staged_script is None:
             return False
         current_exe = Path(sys.executable).resolve()

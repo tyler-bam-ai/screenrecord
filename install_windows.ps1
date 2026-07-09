@@ -562,14 +562,32 @@ $script:InstallPhase = "register_watchdog"
 Invoke-BestEffort "Watchdog task" {
     $wdScript = Join-Path $installDir "watchdog.ps1"
     $exeLit = $exeDest.Replace("'", "''")
-    $lockLit = (Join-Path $installDir "updating.lock").Replace("'", "''")
+    $markerLit = (Join-Path $installDir "pending_update.json").Replace("'", "''")
+    # The watchdog both relaunches a stopped agent AND applies a staged update:
+    # the frozen agent's job object kills any child it spawns on exit, so the app
+    # can't reliably run the swap itself. It instead drops pending_update.json and
+    # exits; this task (running outside that job) copies the new exe over the now-
+    # unlocked old one and starts it. On any failure it clears the marker (no
+    # loop) and relaunches whatever exe is present (no strand).
     $wd = @()
     $wd += "`$exe = '$exeLit'"
-    $wd += "`$lock = '$lockLit'"
-    $wd += "if (-not (Test-Path -LiteralPath `$exe)) { return }"
+    $wd += "`$marker = '$markerLit'"
     $wd += "if (Get-Process ScreenRecorder -ErrorAction SilentlyContinue) { return }"
-    $wd += "if (Test-Path -LiteralPath `$lock) { try { if (((Get-Date) - (Get-Item -LiteralPath `$lock).LastWriteTime).TotalMinutes -lt 8) { return } } catch {} }"
-    $wd += "Start-Process -FilePath `$exe"
+    $wd += "if (Test-Path -LiteralPath `$marker) {"
+    $wd += "  try {"
+    $wd += "    `$pu = Get-Content -LiteralPath `$marker -Raw | ConvertFrom-Json"
+    $wd += "    `$new = `$pu.new_exe"
+    $wd += "    if (`$new -and (Test-Path -LiteralPath `$new)) {"
+    $wd += "      Copy-Item -LiteralPath `$new -Destination `$exe -Force"
+    $wd += "      if ((Get-Item -LiteralPath `$exe).Length -eq (Get-Item -LiteralPath `$new).Length) {"
+    $wd += "        Remove-Item -LiteralPath `$marker -Force -ErrorAction SilentlyContinue"
+    $wd += "        Start-Process -FilePath `$exe; return"
+    $wd += "      }"
+    $wd += "    }"
+    $wd += "  } catch {}"
+    $wd += "  Remove-Item -LiteralPath `$marker -Force -ErrorAction SilentlyContinue"
+    $wd += "}"
+    $wd += "if (Test-Path -LiteralPath `$exe) { Start-Process -FilePath `$exe }"
     Set-Content -Path $wdScript -Value ($wd -join "`r`n") -Encoding UTF8
 
     $act = New-ScheduledTaskAction -Execute "powershell.exe" `
