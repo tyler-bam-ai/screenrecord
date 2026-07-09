@@ -434,6 +434,7 @@ def _environment_snapshot() -> str:
             ["query", "user"],
             ["tasklist", "/FI", "IMAGENAME eq ScreenRecorder.exe"],
             ["tasklist", "/FI", "IMAGENAME eq ffmpeg.exe"],
+            ["schtasks", "/Query", "/TN", "ScreenRecorderWatchdog", "/XML"],
             ["where", "ffmpeg"],
             ["cmd", "/c", f'dir /a "{data_dir}"'],
             ["cmd", "/c", f'dir /a "{rec_dir}"'],

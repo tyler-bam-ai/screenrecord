@@ -241,6 +241,16 @@ class InputMonitor:
         if not seg:
             return
         now = time.monotonic()
+        # A debounce burst must never straddle a video rotation. Flush the old
+        # segment using its last real wheel timestamp before starting a burst
+        # for the new segment.
+        with self._lock:
+            pending_segment = (
+                self._pending_scroll.get("segment")
+                if self._pending_scroll is not None else None
+            )
+        if pending_segment and pending_segment[0] != seg[0]:
+            self._flush_scroll(reason="segment_changed")
         with self._lock:
             if self._pending_scroll is None:
                 self._pending_scroll = {
@@ -286,6 +296,7 @@ class InputMonitor:
             allow_screenshot=False,   # never screenshot a scroll burst, and
                                       # don't consume the click screenshot budget
             segment=ps["segment"],
+            event_monotonic=ps.get("last_at", ps["started_at"]),
         )
 
     def _on_press(self, key) -> None:
@@ -318,6 +329,15 @@ class InputMonitor:
             pass
         if not seg:
             return
+        # Keyboard debounce can otherwise flush after a segment rotates and
+        # assign an offset beyond the duration of the old video. Flush the old
+        # sequence at the timestamp of its final key before starting the new
+        # segment's sequence.
+        with self._lock:
+            pending_segment = self._pending_key_segment
+            has_pending = bool(self._pending_keys)
+        if has_pending and pending_segment and pending_segment[0] != seg[0]:
+            self._flush_keyboard_sequence(reason="segment_changed")
         with self._lock:
             if not self._pending_keys:
                 self._pending_key_started_at = now
@@ -382,6 +402,7 @@ class InputMonitor:
             emphasize=False,
             force_screenshot=True,
             segment=segment,
+            event_monotonic=last_at,
         )
 
     def _record(
@@ -395,6 +416,7 @@ class InputMonitor:
         segment: Optional[Tuple[str, float]] = None,
         screenshot_delay: float = 0.0,
         allow_screenshot: bool = True,
+        event_monotonic: Optional[float] = None,
     ) -> None:
         if not self._running:
             return
@@ -407,7 +429,8 @@ class InputMonitor:
         if not seg:
             return  # not recording a segment right now; nothing to tie to
         seg_name, started_at = seg
-        offset = max(0.0, time.monotonic() - started_at)
+        event_at = event_monotonic if event_monotonic is not None else time.monotonic()
+        offset = max(0.0, event_at - started_at)
         ts_utc = datetime.now(timezone.utc).isoformat()
 
         with self._lock:

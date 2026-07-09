@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +120,11 @@ class ReleaseUpdater:
         self._staged_exe: Optional[Path] = None
         self._staged_version: str = ""
         self._status_path = _data_dir() / STATUS_FILENAME
+        # The hourly checker and a dashboard update_now command can fire at the
+        # same moment. Without serialization they download/rename the same
+        # target and one hits WinError 32, which obscures the successful update
+        # and can produce needless retries.
+        self._check_lock = threading.Lock()
 
     @staticmethod
     def enabled_for_platform(config: Dict[str, Any]) -> bool:
@@ -142,6 +148,16 @@ class ReleaseUpdater:
 
     def check_and_stage(self, *, force: bool = False) -> bool:
         """Return True when an update was staged and should now be applied."""
+        if not self._check_lock.acquire(blocking=False):
+            logger.info("Release update check already in progress; coalescing request.")
+            return False
+        try:
+            return self._check_and_stage_locked(force=force)
+        finally:
+            self._check_lock.release()
+
+    def _check_and_stage_locked(self, *, force: bool = False) -> bool:
+        """Serialized implementation for periodic and command-triggered checks."""
         if self.platform != "windows":
             self._write_status("skipped", "ReleaseUpdater self-apply is Windows-only.")
             return False
