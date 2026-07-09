@@ -382,10 +382,25 @@ def _build_windows_command(
     """Construct the FFmpeg invocation for Windows (gdigrab + dshow)."""
     cmd: List[str] = ["ffmpeg", "-y"]
 
+    # Do not ask gdigrab to paint the cursor into captured frames.  FFmpeg's
+    # gdigrab cursor path can make the *real* Windows cursor blink and can steal
+    # focus on multi-monitor / mixed-DPI desktops (FFmpeg ticket #11599).  That
+    # exactly matches the clinic incident and is hardware/display dependent,
+    # which is why it did not reproduce in the single-monitor Parallels VM.
+    #
+    # Keyboard, click, and scroll telemetry is collected independently by
+    # InputMonitor, so disabling only the video cursor overlay does not affect
+    # input-event capture.  Keep the capture_cursor argument for API/config
+    # compatibility; it remains honored on macOS.
+    if capture_cursor:
+        logger.info(
+            "Windows cursor overlay disabled to avoid gdigrab cursor flicker "
+            "(input events remain enabled)."
+        )
     cmd += [
         "-f", "gdigrab",
         "-framerate", str(fps),
-        "-draw_mouse", "1" if capture_cursor else "0",
+        "-draw_mouse", "0",
         "-i", "desktop",
     ]
 
