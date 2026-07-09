@@ -211,6 +211,9 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
 
     rec = existing.get("recording") if isinstance(existing.get("recording"), dict) else {}
     updater = existing.get("updater") if isinstance(existing.get("updater"), dict) else {}
+    updater_channel = str(updater.get("channel", "stable") or "stable").strip().lower()
+    if updater_channel not in ("stable", "canary"):
+        updater_channel = "stable"
     if sys.platform == "win32":
         manifest_url = (
             updater.get("manifest_url")
@@ -273,6 +276,10 @@ def _normalise_config(existing: dict, dir_: Path, vals: dict) -> dict:
             "enabled": updater.get("enabled", True),
             "check_interval_seconds": updater.get("check_interval_seconds", 3600),
             "manifest_url": manifest_url,
+            # Preserve canary enrollment across self-provisioning repairs. Old
+            # builds silently dropped this field at every restart, defeating
+            # the release ring and tempting operators to test on stable.
+            "channel": updater_channel,
         },
         "google_sheets": {
             "sheet_id": vals.get("sheet", ""),

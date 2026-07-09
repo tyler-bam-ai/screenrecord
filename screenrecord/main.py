@@ -41,6 +41,55 @@ def _iter_screenshot_files(directory: Path):
         yield from directory.glob(pattern)
 
 
+def _build_segment_logbook(stem: str, events: list) -> Dict[str, Any]:
+    """Build an AI-friendly manifest that explicitly pairs events to video."""
+    counts: Dict[str, int] = {}
+    offsets = []
+    timestamps = []
+    for event in events:
+        event_type = str(event.get("event_type") or "unknown")
+        counts[event_type] = counts.get(event_type, 0) + 1
+        try:
+            offsets.append(float(event.get("video_offset_sec")))
+        except (TypeError, ValueError):
+            pass
+        if event.get("ts_utc"):
+            timestamps.append(str(event["ts_utc"]))
+
+    return {
+        "schema": "screenrecord.segment-logbook.v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "segment_id": stem,
+        "pairing": {
+            "video_file": f"{stem}.mp4",
+            "encrypted_video_file": f"{stem}.mp4.enc",
+            "events_file": f"{stem}.events.jsonl",
+            "events_bundle": f"{stem}.events.zip.enc",
+            "join_key": stem,
+        },
+        "timeline": {
+            "timebase": "seconds from first video frame",
+            "first_event_offset_sec": min(offsets) if offsets else None,
+            "last_event_offset_sec": max(offsets) if offsets else None,
+            "first_event_utc": min(timestamps) if timestamps else None,
+            "last_event_utc": max(timestamps) if timestamps else None,
+        },
+        "watermark": {
+            "burned_into_video": sys.platform == "win32",
+            "segment_id": stem,
+            "format": (
+                "SCREENRECORDER | MACHINE <computer> | USER <employee> | "
+                "SEGMENT <segment_id>"
+            ),
+        },
+        "event_count": len(events),
+        "event_counts": counts,
+        # The complete ordered timeline makes the decrypted bundle directly
+        # consumable by an AI without having to infer filenames or join rules.
+        "events": events,
+    }
+
+
 class ScreenRecordService:
     """Top-level service that coordinates all screen recording components."""
 
@@ -1413,9 +1462,30 @@ class ScreenRecordService:
             return
 
         zip_path = out_dir / f"{stem}.events.zip"
+        logbook_path = out_dir / f"{stem}.logbook.json"
         try:
+            events = []
+            for raw_line in events_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    logger.warning("Skipping invalid event JSON for %s", stem)
+                    continue
+                if isinstance(event, dict):
+                    events.append(event)
+            logbook = _build_segment_logbook(stem, events)
+            logbook_path.write_text(
+                json.dumps(logbook, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(events_file, events_file.name)
+                zf.write(logbook_path, logbook_path.name)
                 if shots_dir.is_dir():
                     for shot in sorted(_iter_screenshot_files(shots_dir)):
                         zf.write(shot, f"{shots_dir.name}/{shot.name}")
@@ -1444,7 +1514,7 @@ class ScreenRecordService:
             return
 
         # Clean up local event artifacts only after confirmed upload.
-        cleanup = [events_file, zip_path, Path(upload_path)]
+        cleanup = [events_file, logbook_path, zip_path, Path(upload_path)]
         for p in cleanup:
             try:
                 if p.exists():

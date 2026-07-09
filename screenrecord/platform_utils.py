@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -306,6 +306,8 @@ def build_ffmpeg_command(
             segment_duration=segment_duration,
             audio_device=audio_device,
             capture_cursor=capture_cursor,
+            computer_name=computer_name,
+            employee_name=employee_name,
             output_path=output_path,
         )
 
@@ -377,6 +379,8 @@ def _build_windows_command(
     segment_duration: int,
     audio_device: str,
     capture_cursor: bool,
+    computer_name: str,
+    employee_name: str,
     output_path: str,
 ) -> List[str]:
     """Construct the FFmpeg invocation for Windows (gdigrab + dshow)."""
@@ -410,9 +414,19 @@ def _build_windows_command(
     cmd += ["-t", str(segment_duration)]
 
     # Some Windows desktops report odd pixel dimensions. libx264 with yuv420p
-    # rejects those frames, causing empty segments. Crop to the nearest even
-    # size before encoding.
-    cmd += ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+    # rejects those frames, causing empty segments. Scale to the nearest even
+    # size, then burn an immutable segment identity into the lower-left corner.
+    # The watermark lets a human or AI match extracted frames back to the exact
+    # event logbook even if the file is renamed after download.
+    watermark = _windows_watermark_filter(
+        computer_name=computer_name,
+        employee_name=employee_name,
+        output_path=output_path,
+    )
+    cmd += [
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2," + watermark,
+    ]
 
     cmd += [
         "-c:v", "libx264",
@@ -426,6 +440,40 @@ def _build_windows_command(
 
     cmd.append(output_path)
     return cmd
+
+
+def _escape_drawtext(value: str) -> str:
+    """Escape untrusted identity text for an FFmpeg drawtext value."""
+    text = " ".join(str(value or "").split())
+    return (
+        text.replace("\\", r"\\")
+        .replace(":", r"\:")
+        .replace("'", r"\'")
+        .replace("%", r"\%")
+        .replace(",", r"\,")
+        .replace("[", r"\[")
+        .replace("]", r"\]")
+    )
+
+
+def _windows_watermark_filter(
+    *, computer_name: str, employee_name: str, output_path: str
+) -> str:
+    segment = PureWindowsPath(output_path).stem
+    identity = _escape_drawtext(
+        f"SCREENRECORDER | MACHINE {computer_name} | USER {employee_name} | "
+        f"SEGMENT {segment}"
+    )
+    # Segoe UI is present on supported Windows 10/11 installations. Escape the
+    # drive colon for FFmpeg's filter parser; subprocess receives this argument
+    # directly, so no shell quoting layer is involved.
+    return (
+        "drawtext=fontfile='C\\:/Windows/Fonts/segoeui.ttf'"
+        f":text='{identity}'"
+        ":fontcolor=white:fontsize=18"
+        ":box=1:boxcolor=black@0.60:boxborderw=8"
+        ":x=12:y=h-th-12"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -590,14 +590,29 @@ Invoke-BestEffort "Watchdog task" {
     $wd += "if (Test-Path -LiteralPath `$exe) { Start-Process -FilePath `$exe }"
     Set-Content -Path $wdScript -Value ($wd -join "`r`n") -Encoding UTF8
 
-    $act = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wdScript`""
+    # Never make powershell.exe the scheduled-task action. Even with
+    # -WindowStyle Hidden, an interactive task can flash a black console every
+    # three minutes. wscript.exe is a GUI-subsystem host; it launches the same
+    # PowerShell worker with window style 0, so no console is ever allocated.
+    $wdVbs = Join-Path $installDir "watchdog.vbs"
+    $vbsTemplate = @'
+Option Explicit
+Dim shell
+Set shell = CreateObject("WScript.Shell")
+shell.Run "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""__WATCHDOG_PS1__""", 0, True
+'@
+    $vbs = $vbsTemplate.Replace("__WATCHDOG_PS1__", $wdScript.Replace('"', '""'))
+    Set-Content -Path $wdVbs -Value $vbs -Encoding ASCII
+
+    $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+    $act = New-ScheduledTaskAction -Execute $wscript `
+        -Argument "//B //NoLogo `"$wdVbs`""
     $trg = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(2)) `
         -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
     $prn = New-ScheduledTaskPrincipal -UserId $target.Name -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName "ScreenRecorderWatchdog" -Action $act -Trigger $trg `
         -Principal $prn -Force -ErrorAction Stop | Out-Null
-    Ok "Watchdog registered (relaunches the agent within ~3 min if it stops)."
+    Ok "Hidden watchdog registered (relaunches the agent within ~3 min if it stops)."
 }
 
 # --- 5. Start now if safe -----------------------------------------------------

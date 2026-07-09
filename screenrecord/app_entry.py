@@ -128,6 +128,17 @@ def _run() -> None:
     # at login, so it always has the right home dir. No-op if config exists.
     from screenrecord import provision
     provision.ensure_config()
+    if os.name == "nt":
+        # Repair old fleet tasks that run powershell.exe directly and flash a
+        # black console every three minutes.  This is deliberately done by the
+        # app so an ordinary remote EXE update fixes existing installations;
+        # no interactive installer rerun is required.
+        try:
+            from screenrecord.windows_watchdog import ensure_hidden_watchdog
+
+            ensure_hidden_watchdog()
+        except Exception as exc:
+            _write_early_log(f"windows watchdog repair failed: {exc!r}")
     if "--config" not in sys.argv:
         sys.argv += ["--config", str(Path.home() / ".screenrecord" / "config.yaml")]
     from screenrecord.__main__ import main as real_main

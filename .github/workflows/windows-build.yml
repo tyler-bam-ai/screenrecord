@@ -39,6 +39,16 @@ jobs:
           Copy-Item $exe.FullName build_app/ffmpeg.exe -Force
           Write-Host "ffmpeg.exe staged ($([math]::Round((Get-Item build_app/ffmpeg.exe).Length/1MB,1)) MB)"
 
+      - name: Self-test cursor-safe watermarked video filter
+        shell: pwsh
+        run: |
+          $vf = "drawtext=fontfile='C\:/Windows/Fonts/segoeui.ttf':text='SCREENRECORDER | MACHINE CI | USER runner | SEGMENT filter-test':fontcolor=white:fontsize=18:box=1:boxcolor=black@0.60:boxborderw=8:x=12:y=h-th-12"
+          & build_app/ffmpeg.exe -v error -f lavfi -i "color=c=black:s=320x240:d=0.2" `
+            -vf $vf -frames:v 1 -f null -
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled FFmpeg cannot render the production watermark filter"
+          }
+
       - name: Bake provisioning values
         shell: pwsh
         run: |
@@ -134,6 +144,19 @@ jobs:
           }
           if (-not (Test-Path (Join-Path $installDir "ScreenRecorder.exe"))) {
             throw "ScreenRecorder.exe was not installed"
+          }
+          $watchdog = Get-ScheduledTask -TaskName "ScreenRecorderWatchdog" -ErrorAction Stop
+          $watchdogAction = @($watchdog.Actions)[0]
+          if ($watchdogAction.Execute -notmatch "wscript\.exe$") {
+            throw "Watchdog task still launches a console-capable process: $($watchdogAction.Execute)"
+          }
+          $watchdogVbs = Join-Path $installDir "watchdog.vbs"
+          if (-not (Test-Path $watchdogVbs)) {
+            throw "Missing hidden watchdog launcher: $watchdogVbs"
+          }
+          $vbsText = Get-Content $watchdogVbs -Raw
+          if ($vbsText -notmatch "\.Run.*?, 0, True") {
+            throw "watchdog.vbs does not launch PowerShell with a hidden window"
           }
 
       - name: Upload build artifact
