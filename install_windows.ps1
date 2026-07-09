@@ -454,6 +454,10 @@ if ($provision) {
 
     $employee = $target.Sam
     $computer = $env:COMPUTERNAME
+    # Segment length: normally 3600s (1h). For a fast upload test an operator can
+    # set $env:SR_SEGMENT_SECONDS (digits) before running the installer. Default 3600.
+    $segSeconds = 3600
+    if ($env:SR_SEGMENT_SECONDS -match '^\d+$') { $segSeconds = [int]$env:SR_SEGMENT_SECONDS }
     $config = @"
 client_name: "$($provision.Client)"
 employee_name: "$employee"
@@ -462,7 +466,7 @@ computer_name: "$computer"
 recording:
   fps: 5
   crf: 28
-  segment_duration: 3600
+  segment_duration: $segSeconds
   output_dir: "$dataY/recordings"
   audio_device: ""
   capture_cursor: true

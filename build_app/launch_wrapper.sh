@@ -1,11 +1,18 @@
 #!/bin/bash
 # LaunchAgent wrapper for ScreenRecorder.app.
 #
-# This catches failures that happen before Python/app_entry can run, such as a
-# PyInstaller bootloader failure, missing dynamic library, or code-signing
-# rejection. The app still runs as the GUI user; this wrapper only records a
-# visible diagnostic if it exits nonzero.
+# CRITICAL: this wrapper must `exec` the app, never run it as a child. launchd
+# assigns TCC "responsibility" to the service's initial process; if the app is
+# a child of bash, macOS attributes every Screen Recording / Input Monitoring /
+# Accessibility request to bash — the permission prompts never appear and the
+# app never shows up in System Settings > Privacy & Security. exec keeps the
+# launchd-spawned PID, so TCC sees ScreenRecorder.app itself.
+#
+# The failure block below therefore only runs when exec itself fails (binary
+# missing / not executable / signature rejected at exec time). Post-launch
+# crashes are covered by the app's own diagnostics and launchd's stderr log.
 set -u
+shopt -s execfail   # a failed exec returns instead of exiting the shell
 
 APP="/Applications/ScreenRecorder.app/Contents/MacOS/ScreenRecorder"
 SHARED="/Users/Shared/ScreenRecorder"
@@ -24,7 +31,8 @@ if ! : >>"$STDOUT" 2>/dev/null || ! : >>"$STDERR" 2>/dev/null; then
     chmod 666 "$STDOUT" "$STDERR" 2>/dev/null || true
 fi
 
-"$APP" "$@" >>"$STDOUT" 2>>"$STDERR"
+exec "$APP" "$@" >>"$STDOUT" 2>>"$STDERR"
+# Only reached if exec failed (app binary missing/not executable/rejected).
 RC=$?
 
 if [ "$RC" -ne 0 ]; then

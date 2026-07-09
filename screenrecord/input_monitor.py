@@ -289,6 +289,11 @@ class InputMonitor:
         )
 
     def _on_press(self, key) -> None:
+        # Ground truth that Input Monitoring is EFFECTIVE: count every physical
+        # key press here, before the segment gate below. A keystroke reaching us
+        # proves the grant regardless of whether a recording segment exists yet
+        # (input capture can start before screen recording is granted).
+        self._n_keys += 1
         key_value = ""
         if self._capture_keystroke_text:
             try:
@@ -353,7 +358,6 @@ class InputMonitor:
                 self._key_timer = None
         if not keys:
             return
-        self._n_keys += 1  # ground truth that Input Monitoring is effective
 
         text = "".join(k for k in keys if len(k) == 1)
         if self._keyboard_text_max_chars and len(text) > self._keyboard_text_max_chars:

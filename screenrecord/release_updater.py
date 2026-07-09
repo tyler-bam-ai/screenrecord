@@ -165,6 +165,15 @@ class ReleaseUpdater:
         # CURRENT version would otherwise re-download + re-swap + restart every
         # cycle forever (the same hourly-loop symptom, config-triggered).
         version_differs = _version_parts(remote_version) != _version_parts(self.local_version)
+        # Never downgrade, even under force: a rolled-back or tampered manifest
+        # must not be able to swap in an older (potentially vulnerable) build.
+        if _remote_is_newer(self.local_version, remote_version):
+            self._write_status(
+                "downgrade_blocked",
+                f"Refusing to downgrade from {self.local_version} to {remote_version}.",
+                remote_version=remote_version,
+            )
+            return False
         should_update = (
             force
             or _remote_is_newer(remote_version, self.local_version)

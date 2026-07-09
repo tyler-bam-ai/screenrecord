@@ -393,8 +393,15 @@ class ScreenRecorder:
                     self._last_error = line[-500:]
                     logger.error("FFmpeg: %s", line)
                     if "no space left" in lower:
-                        logger.critical("Disk full detected. Stopping recording.")
-                        self._stop_event.set()
+                        # Kill only the current segment, NOT the whole loop:
+                        # setting _stop_event here would end recording for good
+                        # (is_recording stays True, nothing restarts it) even
+                        # after space is freed. Terminating ffmpeg drops us back
+                        # to the loop top, which pauses 60s on the disk check and
+                        # resumes automatically once space is available again.
+                        logger.critical("Disk full detected. Ending current "
+                                        "segment; will retry when space frees up.")
+                        self._terminate_ffmpeg()
                 elif "warning" in lower:
                     logger.warning("FFmpeg: %s", line)
                 else:

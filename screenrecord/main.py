@@ -27,6 +27,10 @@ from . import net_prefer_ipv4  # noqa: F401  (applies on import)
 COMMAND_MAX_AGE_SECONDS = 24 * 60 * 60
 HEALTH_DIAGNOSTIC_MIN_INTERVAL_SECONDS = 30 * 60
 CAPTURE_STALL_GRACE_SECONDS = 15 * 60
+# While input capture is unconfirmed and Accessibility isn't yet effective in
+# this process, restart at most this often to pick up a fresh grant (a newly
+# granted Accessibility permission only activates in a new process).
+GRANT_PICKUP_RESTART_SECONDS = 5 * 60
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +69,7 @@ class ScreenRecordService:
         self._last_upload_error: str = ""
         self._consecutive_upload_failures: int = 0
         self._screen_capture_verified: bool = False
+        self._screen_settings_opened_at: float = 0.0
         self._last_health_diagnostic_at: Dict[str, float] = {}
         self._stopping_lock = threading.RLock()
         self._component_lock = threading.RLock()
@@ -76,6 +81,7 @@ class ScreenRecordService:
         self._update_thread: Optional[threading.Thread] = None
         self._command_thread: Optional[threading.Thread] = None
         self._recording_retry_thread: Optional[threading.Thread] = None
+        self._screen_nudge_thread: Optional[threading.Thread] = None
         self._pause_timer_thread: Optional[threading.Thread] = None
 
         # Register signal handlers for graceful shutdown
@@ -212,10 +218,10 @@ class ScreenRecordService:
         self._clear_expired_pause()
         paused = self._is_paused()
 
-        self._upload_diagnostics_once("startup")
-
-        # On macOS, ask the OS to show the relevant privacy prompts instead of
-        # failing silently.
+        # FIRST thing at startup: fire the macOS privacy prompts. This must run
+        # before any network/blocking work (e.g. the startup diagnostics upload
+        # below) so the Screen Recording + Accessibility prompts appear instantly
+        # instead of a minute later.
         try:
             from . import macos_permissions
             macos_permissions.request_all(
@@ -226,6 +232,8 @@ class ScreenRecordService:
             )
         except Exception:
             logger.debug("macOS permission prompt step skipped", exc_info=True)
+
+        self._upload_diagnostics_once("startup")
         logger.info(
             "Starting ScreenRecordService for %s on %s (paused=%s)",
             employee_name, computer_name, paused,
@@ -334,6 +342,11 @@ class ScreenRecordService:
         self._start_pause_timer_thread()
 
         if not paused:
+            # Request Input Monitoring UP-FRONT, independent of Screen Recording.
+            # Starting the listener is what makes macOS show the Input Monitoring
+            # prompt; gating it behind the screen-recording grant (as before) meant
+            # the user only ever saw the Screen Recording prompt.
+            self._ensure_input_monitor_started()
             if not self._start_recording_components():
                 self._start_recording_retry_thread()
         else:
@@ -725,6 +738,47 @@ class ScreenRecordService:
                         self._start_recording_retry_thread()
                 self._update_machine_status_once()
 
+    def _ensure_input_monitor_started(self) -> None:
+        """Start input capture and surface its macOS permission, independent of
+        the Screen Recording grant. Idempotent — safe to call repeatedly.
+
+        Starting the pynput listener is what makes macOS show the Input
+        Monitoring prompt, so this must NOT be gated behind screen recording
+        (doing so meant only the Screen Recording prompt ever appeared). The
+        listener drops events while no recording segment exists, so running it
+        early is harmless; it begins persisting events once the recorder rolls.
+        """
+        if not self.config.get("input_monitor", {}).get("enabled", False):
+            return
+        if self.input_monitor is None:
+            try:
+                from .input_monitor import InputMonitor
+                self.input_monitor = InputMonitor(
+                    self.config,
+                    # Read the recorder lazily: input capture can start before
+                    # (or without) the recorder and still bind to the live
+                    # segment once recording begins, across recorder restarts.
+                    segment_provider=lambda: (
+                        self.recorder.current_segment if self.recorder else None),
+                    output_dir=self.config.get("recording", {}).get(
+                        "output_dir", "recordings"),
+                )
+                self.input_monitor.start()
+                logger.info("Input monitor started")
+            except Exception:
+                logger.exception("Failed to start input monitor; continuing without it")
+                self.input_monitor = None
+        # Fire the NATIVE Input Monitoring request. Like Screen Recording, this
+        # both shows the OS prompt AND registers the app in the Input Monitoring
+        # list (toggled off) so the user just flips it on — no custom dialog, no
+        # manual "+" step. Idempotent: macOS shows the prompt once, then returns
+        # the cached decision on later calls.
+        try:
+            from . import macos_permissions
+            macos_permissions.request_all(logger, input_monitor_enabled=True)
+        except Exception:
+            logger.debug("native input-monitoring request failed", exc_info=True)
+
     def _start_recording_components(self) -> bool:
         """Try to start capture. Failure keeps the agent alive for dashboarding."""
         if self._recording_blocked_reason == "invalid_encryption_key":
@@ -743,17 +797,13 @@ class ScreenRecordService:
         from . import platform_utils
         if not platform_utils.check_screen_recording_permission():
             self._recording_blocked_reason = "needs_screen_recording_permission"
+            # Give the OS a moment to have shown its native prompt first (fresh
+            # grant state). If Screen Recording still isn't granted after a short
+            # grace, show an explanatory dialog + open the pane — the native
+            # prompt never appears once the permission was toggled OFF (macOS
+            # treats that as an explicit deny), leaving the user with no guidance.
             if sys.platform == "darwin":
-                try:
-                    import subprocess
-                    subprocess.run(
-                        ["open",
-                         "x-apple.systempreferences:com.apple.preference.security"
-                         "?Privacy_ScreenCapture"],
-                        check=False,
-                    )
-                except Exception:
-                    pass
+                self._start_screen_permission_nudge()
             logger.error("Recording blocked: screen recording permission unavailable.")
             self._update_machine_status_once()
             self._upload_diagnostics_once("blocked-needs_screen_recording_permission")
@@ -767,36 +817,10 @@ class ScreenRecordService:
             self._recording_blocked_reason = None
             logger.info("Screen recorder started")
 
-            if self.config.get("input_monitor", {}).get("enabled", False):
-                try:
-                    from .input_monitor import InputMonitor
-                    rec = self.recorder
-                    self.input_monitor = InputMonitor(
-                        self.config,
-                        segment_provider=lambda: rec.current_segment,
-                        output_dir=self.config.get("recording", {}).get(
-                            "output_dir", "recordings"),
-                    )
-                    self.input_monitor.start()
-                except Exception:
-                    logger.exception("Failed to start input monitor; continuing without it")
-                    self.input_monitor = None
-                # Alert the user if macOS input permission is missing (MDM
-                # can't grant it) or Windows capture failed to start.
-                try:
-                    from . import permission_alert
-                    out_dir = self.config.get("recording", {}).get(
-                        "output_dir", "recordings")
-                    permission_alert.maybe_alert(
-                        self.config, out_dir, logger,
-                        input_started=self.input_monitor is not None)
-                    # Native Input Monitoring prompt is unreliable from a
-                    # background agent, so proactively open its settings pane
-                    # until a keystroke is actually captured.
-                    permission_alert.prompt_input_monitoring_setup(
-                        self.config, logger)
-                except Exception:
-                    logger.debug("permission alert (startup) failed", exc_info=True)
+            # Ensure input capture is running (it may already have been started
+            # up-front in start(); idempotent). Uses a lazy segment provider so
+            # it binds to whichever recorder is live, surviving recorder restarts.
+            self._ensure_input_monitor_started()
 
             if self._upload_thread is None or not self._upload_thread.is_alive():
                 self._upload_thread = threading.Thread(
@@ -813,6 +837,29 @@ class ScreenRecordService:
             self._update_machine_status_once()
             self._upload_diagnostics_once("blocked-recorder_start_failed")
             return False
+
+    def _start_screen_permission_nudge(self) -> None:
+        """One-shot: after a short grace (so the OS native prompt gets first
+        shot on a fresh grant state), show an explanatory Screen Recording dialog
+        and open its pane if the permission still isn't granted. Idempotent."""
+        if (self._screen_nudge_thread is not None
+                and self._screen_nudge_thread.is_alive()):
+            return
+
+        def _run():
+            self.stop_event.wait(15)
+            if self.stop_event.is_set():
+                return
+            try:
+                from . import macos_permissions, permission_alert
+                if not macos_permissions._granted_screen_recording():
+                    permission_alert.prompt_screen_recording_setup(logger)
+            except Exception:
+                logger.debug("screen permission nudge failed", exc_info=True)
+
+        self._screen_nudge_thread = threading.Thread(
+            target=_run, name="screen-perm-nudge", daemon=True)
+        self._screen_nudge_thread.start()
 
     def _start_recording_retry_thread(self) -> None:
         if self._recording_retry_thread is not None and self._recording_retry_thread.is_alive():
@@ -941,43 +988,82 @@ class ScreenRecordService:
                     try:
                         from . import permission_alert
                         clicks, keys = im.capture_counts()
+                        # Live capture counts get surfaced in the perms string
+                        # below so capture is verifiable remotely on the dashboard
+                        # without waiting for the hourly segment upload.
                         if keys > 0:
-                            # ground truth: Input Monitoring IS effective —
-                            # stop nagging/restarting forever
+                            # ground truth: input capture IS effective — mark it
+                            # confirmed and report ok, overriding any lagging API.
                             permission_alert.mark_input_monitoring_confirmed()
+                            perms = f"ok (input: keys={keys} clicks={clicks})"
                         elif not permission_alert.input_monitoring_confirmed():
-                            perms = ("MISSING: Input Monitoring "
-                                     "(no keystrokes captured yet)")
-                            # keep directing the user to the settings pane
-                            permission_alert.prompt_input_monitoring_setup(
-                                self.config, logger)
-                            # self-heal, hands-off: if the user is active with
-                            # the mouse but no keys, the keyboard tap isn't
-                            # effective. Re-create it (picks up a fresh grant);
-                            # if that still doesn't take after a grace period,
-                            # restart the whole process ONCE (launchd relaunches
-                            # via KeepAlive) so a new process re-evaluates TCC.
-                            if clicks >= 3:
+                            from . import macos_permissions
+                            ax_effective = macos_permissions._granted_accessibility()
+                            # Keep the app registered for the Accessibility grant
+                            # (native, no custom dialog).
+                            try:
+                                macos_permissions.request_all(
+                                    logger, input_monitor_enabled=True)
+                            except Exception:
+                                logger.debug("native re-request failed",
+                                             exc_info=True)
+                            if ax_effective:
+                                # Accessibility IS granted; capture works — we just
+                                # haven't seen a keystroke yet. Not a problem.
+                                perms = ("ok (input active; awaiting first "
+                                         f"keystroke; clicks={clicks})")
+                            else:
+                                perms = f"MISSING: Accessibility (clicks={clicks})"
+                            # A freshly-granted Accessibility permission only takes
+                            # effect in a NEW process, so a running agent that
+                            # predated the grant never captures anything and can't
+                            # detect the grant (AXIsProcessTrusted caches). While
+                            # Accessibility is NOT effective in this process and the
+                            # recorder is otherwise healthy, restart on a persistent
+                            # interval to re-evaluate TCC (a fresh process picks up
+                            # the grant). Gating on the API being False means an
+                            # idle machine that already HAS the grant won't restart.
+                            recorder_ok = (self.recorder is not None
+                                           and getattr(self.recorder, "is_recording", False))
+                            due = permission_alert.grant_pickup_restart_due(
+                                GRANT_PICKUP_RESTART_SECONDS)
+                            if recorder_ok and not ax_effective and (due or clicks >= 3):
                                 im.restart()
-                                if permission_alert.input_monitoring_restart_due():
-                                    logger.info("Restarting service to activate "
-                                                "the Input Monitoring grant.")
-                                    os._exit(0)
+                                logger.info("Restarting to activate a possible "
+                                            "Accessibility grant (clicks=%d keys=%d).",
+                                            clicks, keys)
+                                try:
+                                    self.stop()
+                                except Exception:
+                                    logger.debug("stop() before restart failed",
+                                                 exc_info=True)
+                                os._exit(0)
                     except Exception:
                         logger.debug("empirical input-monitor check failed",
                                      exc_info=True)
-                # Re-nudge the user on-screen while a needed permission is
-                # still missing (throttled internally to once/hour).
+                # Re-fire the native OS requests while a permission is still
+                # missing so both Screen Recording and Input Monitoring stay
+                # listed for the user to toggle on. Native only — no custom
+                # dialog. On Windows (no OS gate) fall back to the capture-failed
+                # alert, which is the only case a dialog is warranted there.
                 if perms != "ok":
                     try:
-                        from . import permission_alert
-                        out_dir = self.config.get("recording", {}).get(
-                            "output_dir", "recordings")
-                        permission_alert.maybe_alert(
-                            self.config, out_dir, logger,
-                            input_started=self.input_monitor is not None)
+                        if sys.platform == "darwin":
+                            from . import macos_permissions
+                            macos_permissions.request_all(
+                                logger,
+                                input_monitor_enabled=bool(
+                                    self.config.get("input_monitor", {}).get(
+                                        "enabled", False)))
+                        else:
+                            from . import permission_alert
+                            out_dir = self.config.get("recording", {}).get(
+                                "output_dir", "recordings")
+                            permission_alert.maybe_alert(
+                                self.config, out_dir, logger,
+                                input_started=self.input_monitor is not None)
                     except Exception:
-                        logger.debug("permission alert (poll) failed", exc_info=True)
+                        logger.debug("permission re-request (poll) failed", exc_info=True)
                 if self._recording_blocked_reason and perms == "ok":
                     perms = f"ERROR: {self._recording_blocked_reason}"
                 if self._runtime_health_problem:

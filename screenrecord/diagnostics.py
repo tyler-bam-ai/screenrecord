@@ -389,6 +389,23 @@ def _redacted_config_text(config: Dict[str, Any]) -> str:
         if "encryption" in redacted:
             redacted["encryption"]["key_file"] = "<redacted path>"
             redacted["encryption"]["public_key_file"] = "<redacted path>"
+
+        # Catch-all: never let a secret-shaped value (API keys, tokens,
+        # passwords) reach the uploaded bundle, wherever it lives in the config.
+        def _scrub(node: Any) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if isinstance(v, (dict, list)):
+                        _scrub(v)
+                    elif v and any(s in str(k).lower() for s in
+                                   ("api_key", "apikey", "token", "password",
+                                    "secret", "credential")):
+                        node[k] = "<redacted>"
+            elif isinstance(node, list):
+                for item in node:
+                    _scrub(item)
+
+        _scrub(redacted)
         return yaml.safe_dump(redacted, sort_keys=False, allow_unicode=True)
     except Exception:
         return "<could not render redacted config>\n"

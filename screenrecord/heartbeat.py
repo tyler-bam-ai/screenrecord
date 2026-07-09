@@ -8,6 +8,7 @@ file is uploaded to a ``_heartbeats`` subfolder under the Drive root folder.
 import io
 import json
 import logging
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -168,11 +169,19 @@ class HeartbeatSender:
         uptime_seconds = (now - started_dt).total_seconds()
         uptime_hours = round(uptime_seconds / 3600, 2)
 
+        try:
+            from .version import MAC_UPDATE_VERSION, WINDOWS_VERSION
+            app_version = (
+                WINDOWS_VERSION if sys.platform == "win32" else MAC_UPDATE_VERSION)
+        except Exception:
+            app_version = ""
+
         payload = {
             "employee_name": self.employee_name,
             "computer_name": self.computer_name,
             "client_name": self.client_name,
             "status": self._status,
+            "app_version": app_version,
             "last_heartbeat": now.isoformat(),
             "segments_uploaded": self._segments_uploaded,
             "started_at": self._started_at,

@@ -224,6 +224,11 @@ class ConfigManager:
                 if key in override and key in base:
                     if isinstance(base_val, dict) and isinstance(over_val, dict):
                         merged[key] = _deep_merge(base_val, over_val)
+                    elif isinstance(base_val, dict) and over_val is None:
+                        # A present-but-empty YAML section (e.g. "recording:")
+                        # parses to None. Keep the defaults rather than nulling
+                        # the whole section, which would crash later .get() calls.
+                        merged[key] = dict(base_val)
                     else:
                         merged[key] = over_val
                 elif key in override:

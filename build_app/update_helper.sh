@@ -151,6 +151,16 @@ case "$FORCE" in
     true|TRUE|1|yes|YES) FORCE_NORM="true" ;;
 esac
 
+# Never install a version OLDER than what's installed, even with force — that
+# would let a rolled-back/tampered manifest downgrade the fleet to a known-
+# vulnerable signed build. force only means "reinstall the same version"; a
+# real upgrade still requires remote > local.
+if version_gt "$LOCAL" "$REMOTE"; then
+    log "Refusing downgrade (local=$LOCAL > remote=$REMOTE)."
+    write_status "downgrade_blocked" "Refusing to install an older version." "$REMOTE" "$LOCAL"
+    rm -f "$TRIGGER" 2>/dev/null || true
+    exit 0
+fi
 if { [ "$FORCE_NORM" = "true" ] && ! version_differs "$REMOTE" "$LOCAL"; } || \
    { [ "$FORCE_NORM" != "true" ] && ! version_gt "$REMOTE" "$LOCAL"; }; then
     log "Already up to date (local=$LOCAL remote=$REMOTE)."

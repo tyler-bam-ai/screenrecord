@@ -7,6 +7,12 @@
 <dict>
     <key>Label</key>
     <string>ai.bam.screenrecord</string>
+    <!-- macOS 13+: attribute this login item to the app in System Settings
+         (the wrapper execs the app, so the running process IS the app). -->
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>ai.bam.screenrecord</string>
+    </array>
     <key>ProgramArguments</key>
     <array>
         <string>/Library/Application Support/ScreenRecorder/launch_screenrecorder.sh</string>

@@ -26,6 +26,9 @@ from pathlib import Path
 # Deep-links straight to Privacy & Security → Input Monitoring on macOS.
 _MAC_SETTINGS_URL = (
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+# Deep-links to Privacy & Security → Screen & System Audio Recording.
+_MAC_SCREEN_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
 
 _STATE_FILE = ".permission_alert_state.json"
 
@@ -167,6 +170,72 @@ def input_monitoring_restart_due(grace_sec: float = 120) -> bool:
         return False
     if now - st["problem_since"] >= grace_sec and not st.get("restart_done"):
         st["restart_done"] = True
+        _write_im_state(st)
+        return True
+    return False
+
+
+def prompt_screen_recording_setup(logger, repeat_min: float = 60) -> str:
+    """Explain the Screen Recording permission and open its settings pane.
+
+    macOS only shows the native Screen Recording prompt from a *fresh* grant
+    state — never for a permission that was toggled OFF (which it treats as an
+    explicit deny) or that a prior test reset inconsistently. This gives a clear,
+    consistent "please enable this" message plus the right pane in every state,
+    matching the Accessibility experience. Throttled; safe to call repeatedly.
+    """
+    if sys.platform != "darwin":
+        return "na"
+    st = _read_im_state()
+    if (time.time() - st.get("sr_last", 0)) < repeat_min * 60:
+        return "throttled"
+    threading.Thread(target=_show_screen_recording_alert, args=(logger,),
+                     daemon=True).start()
+    st["sr_last"] = time.time()
+    _write_im_state(st)
+    logger.info("Prompted user to enable Screen Recording.")
+    return "prompted"
+
+
+def _show_screen_recording_alert(logger) -> None:
+    msg = (
+        "Screen Recorder needs macOS permission to record this screen for "
+        "authorized workplace monitoring.\\n\\n"
+        "Your IT team CANNOT enable this remotely — Apple requires you to turn "
+        "it on yourself:\\n\\n"
+        "1. Click \\\"Open Settings\\\" below\\n"
+        "2. Switch ON \\\"ScreenRecorder\\\" under Screen & System Audio "
+        "Recording")
+    script = (
+        'display dialog "' + msg + '" '
+        'with title "Action needed: Screen Recorder" '
+        'buttons {"Later", "Open Settings"} default button "Open Settings" '
+        'with icon caution')
+    try:
+        out = subprocess.run(["osascript", "-e", script],
+                             capture_output=True, text=True, timeout=180)
+        if "Open Settings" in (out.stdout or ""):
+            subprocess.run(["open", _MAC_SCREEN_URL], timeout=30)
+        logger.info("Showed Screen Recording permission alert to user.")
+    except Exception:
+        logger.debug("screen recording alert failed", exc_info=True)
+
+
+def grant_pickup_restart_due(interval_sec: float = 300) -> bool:
+    """Rate-limit the "restart to pick up a fresh Accessibility grant" action to
+    at most once per interval_sec, persistently across process restarts.
+
+    A newly-granted Accessibility permission only becomes effective in a NEW
+    process, and AXIsProcessTrusted caches within a process, so a running agent
+    that predated the grant can neither capture nor detect it. The caller
+    restarts on this cadence while capture is unconfirmed; the timestamp is
+    persisted so the re-exec'd process doesn't restart again immediately.
+    Cleared for good by mark_input_monitoring_confirmed once a key is captured.
+    """
+    st = _read_im_state()
+    now = time.time()
+    if now - st.get("last_grant_restart", 0) >= interval_sec:
+        st["last_grant_restart"] = now
         _write_im_state(st)
         return True
     return False

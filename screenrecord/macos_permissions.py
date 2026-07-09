@@ -18,14 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 def request_all(logger_=None, *, input_monitor_enabled: bool = False) -> None:
-    """Ask macOS to prompt for required permissions. No-op off macOS."""
+    """Ask macOS to prompt for required permissions. No-op off macOS.
+
+    Keyboard + mouse capture goes through pynput, whose macOS backend is gated
+    on Accessibility (it checks AXIsProcessTrusted and installs a session event
+    tap). So input capture needs the *Accessibility* grant — NOT the separate
+    "Input Monitoring" pane, where the app never appears. We therefore request
+    Accessibility (which both prompts and auto-registers the app in that list)
+    and do not pester the user with a second Input Monitoring prompt.
+    """
     log = logger_ or logger
     if sys.platform != "darwin":
         return
     _request_screen_recording(log)
     if input_monitor_enabled:
         _request_accessibility(log)
-        _request_input_monitoring(log)
 
 
 def _load(framework: str):
@@ -51,10 +58,13 @@ def check_all(*, input_monitor_enabled: bool = False) -> str:
     if not _granted_screen_recording():
         missing.append("Screen Recording")
     if input_monitor_enabled:
+        # Input capture (pynput) is gated on Accessibility, not the separate
+        # "Input Monitoring" pane — so Accessibility is the only grant to check.
+        # (IOHIDCheckAccess is unreliable on the frozen build and isn't the
+        # permission we actually use; the authoritative signal is captured
+        # keystrokes, tracked by the caller.)
         if not _granted_accessibility():
             missing.append("Accessibility")
-        if not _granted_input_monitoring():
-            missing.append("Input Monitoring")
     return "ok" if not missing else "MISSING: " + ", ".join(missing)
 
 
@@ -97,12 +107,26 @@ def _granted_input_monitoring() -> bool:
     return False   # fail CLOSED
 
 
+# Prompt at most ONCE per process. AXIsProcessTrustedWithOptions re-shows the
+# prompt on every call while the process is untrusted, and a freshly-granted
+# Accessibility permission doesn't take effect until a restart — so without this
+# guard the 60s status loop pops the prompt over and over after the user already
+# allowed it. A restart yields a fresh process (flags reset) that re-checks
+# without prompting if the grant is now effective.
+_ax_prompted = False
+_screen_prompted = False
+
+
 def _request_screen_recording(log) -> None:
+    global _screen_prompted
+    if _screen_prompted:
+        return
     try:
         cg = _load("CoreGraphics")
         if hasattr(cg, "CGRequestScreenCaptureAccess"):
             cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
             granted = cg.CGRequestScreenCaptureAccess()
+            _screen_prompted = True
             log.info("Screen Recording access requested (granted=%s).", bool(granted))
     except Exception:
         log.debug("CGRequestScreenCaptureAccess unavailable", exc_info=True)
@@ -110,16 +134,27 @@ def _request_screen_recording(log) -> None:
 
 def _request_accessibility(log) -> None:
     """AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true}) shows
-    the Accessibility prompt that pynput needs (its event tap is gated here)."""
+    the Accessibility prompt that pynput needs (its event tap is gated here).
+
+    Prompts at most once per process (see _ax_prompted) so an already-granted
+    user isn't nagged repeatedly while we wait for the restart that activates it.
+    """
+    global _ax_prompted
+    if _ax_prompted:
+        return
+    # If Accessibility is already effective in THIS process, don't prompt at all.
+    if _granted_accessibility():
+        _ax_prompted = True
+        return
     try:
         appsvc = _load("ApplicationServices")
         cf = _load("CoreFoundation")
 
-        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
-        cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-        kCFStringEncodingUTF8 = 0x08000100
-        prompt_key = cf.CFStringCreateWithCString(
-            None, b"AXTrustedCheckOptionPrompt", kCFStringEncodingUTF8)
+        # Must be the framework's own constant: the dictionary below is created
+        # with NULL callbacks (pointer-equality keys), so a lookalike CFString
+        # we allocate ourselves would never match AX's lookup and the prompt
+        # would silently not show.
+        prompt_key = ctypes.c_void_p.in_dll(appsvc, "kAXTrustedCheckOptionPrompt")
 
         kCFBooleanTrue = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
 
@@ -135,6 +170,7 @@ def _request_accessibility(log) -> None:
         appsvc.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
         appsvc.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
         trusted = appsvc.AXIsProcessTrustedWithOptions(options)
+        _ax_prompted = True
         log.info("Accessibility trust requested (trusted=%s).", bool(trusted))
     except Exception:
         log.debug("AXIsProcessTrustedWithOptions unavailable", exc_info=True)

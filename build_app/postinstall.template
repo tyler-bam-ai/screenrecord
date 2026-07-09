@@ -215,6 +215,27 @@ EMP=$(dscl . -read "/Users/$CONSOLE_USER" RealName 2>/dev/null | awk 'NR==2{$1=$
 [ -z "$EMP" ] && EMP="$CONSOLE_USER"
 COMP=$(hostname -s 2>/dev/null)
 [ -z "$COMP" ] && COMP=$(scutil --get LocalHostName 2>/dev/null || hostname)
+# A macOS user can edit their own RealName; strip characters that would break
+# out of the quoted YAML string below (double-quote, backslash, newline/CR) so
+# they can't inject arbitrary config keys (e.g. disabling the updater).
+sanitize_yaml() { printf '%s' "$1" | tr -d '"\\\r\n'; }
+EMP=$(sanitize_yaml "$EMP")
+COMP=$(sanitize_yaml "$COMP")
+
+# Segment length: normally 3600s (1h). For a fast upload test, an operator can
+# force a shorter segment via the env var SR_SEGMENT_SECONDS or a one-shot
+# sentinel file /Users/Shared/.sr_segment_override (digits only). The sentinel
+# is consumed (deleted) so it only affects this install, not later re-provisions.
+SEG_SECONDS=3600
+if printf '%s' "${SR_SEGMENT_SECONDS:-}" | grep -Eq '^[0-9]+$'; then
+    SEG_SECONDS="$SR_SEGMENT_SECONDS"
+fi
+if [ -f /Users/Shared/.sr_segment_override ]; then
+    OVR=$(tr -dc '0-9' < /Users/Shared/.sr_segment_override 2>/dev/null)
+    [ -n "$OVR" ] && SEG_SECONDS="$OVR"
+    rm -f /Users/Shared/.sr_segment_override 2>/dev/null || true
+fi
+echo "Using segment_duration=${SEG_SECONDS}s"
 
 if [ "${SCREENRECORDER_UPDATER_INSTALL:-}" = "1" ] && [ -f "$DIR/config.yaml" ]; then
     echo "Preserving existing config.yaml during helper-driven update."
@@ -227,7 +248,7 @@ computer_name: "$COMP"
 recording:
   fps: 5
   crf: 28
-  segment_duration: 3600
+  segment_duration: $SEG_SECONDS
   output_dir: "$DIR/recordings"
   audio_device: ""
   capture_cursor: true
