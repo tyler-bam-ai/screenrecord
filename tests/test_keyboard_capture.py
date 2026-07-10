@@ -15,6 +15,17 @@ from screenrecord.windows_raw_keyboard import (
 
 
 class KeyboardTextTests(unittest.TestCase):
+    def test_retains_windows_backend_configuration_for_startup(self) -> None:
+        monitor = InputMonitor(
+            {"input_monitor": {
+                "enabled": True,
+                "windows_keyboard_backend": "raw_input",
+            }},
+            segment_provider=lambda: None,
+            output_dir=".",
+        )
+        self.assertEqual(monitor._windows_keyboard_backend, "raw_input")
+
     def test_reconstructs_exact_phrase_with_spaces(self) -> None:
         keys = list("hello") + ["Key.space"] + list("world")
         self.assertEqual(InputMonitor._reconstruct_text(keys), "hello world")

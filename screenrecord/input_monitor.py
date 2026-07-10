@@ -76,6 +76,9 @@ class InputMonitor:
         self._keyboard_text_max_chars: int = max(
             0, int(im.get("keyboard_text_max_chars", 160))
         )
+        self._windows_keyboard_backend = str(
+            im.get("windows_keyboard_backend", "raw_input")
+        ).strip().lower()
         self._click_screenshot_delay: float = max(
             0.0, float(im.get("click_screenshot_delay_sec", 0.15))
         )
@@ -202,9 +205,7 @@ class InputMonitor:
         self._mouse_listener = mouse.Listener(
             on_click=self._on_click, on_scroll=self._on_scroll)
         self._keyboard_listener = None
-        requested_backend = str(
-            im.get("windows_keyboard_backend", "raw_input")
-        ).strip().lower()
+        requested_backend = self._windows_keyboard_backend
         if sys.platform == "win32" and requested_backend != "pynput":
             try:
                 from .windows_raw_keyboard import WindowsRawKeyboardListener
