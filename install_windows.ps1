@@ -20,6 +20,8 @@ param(
     [string]$TargetUser = "",
     [string]$BootstrapFile = "",
     [string]$ExeSha256 = "__SCREENRECORDER_EXE_SHA256__",
+    [ValidateSet("", "stable", "canary")]
+    [string]$UpdateChannel = "",
     [switch]$NoStart
 )
 
@@ -481,6 +483,9 @@ if ($provision) {
         }
     } elseif ($existingConfigText -match 'windows-canary') {
         $updaterChannel = "canary"
+    }
+    if ($UpdateChannel) {
+        $updaterChannel = $UpdateChannel.ToLowerInvariant()
     }
     $updaterTag = if ($updaterChannel -eq "canary") { "windows-canary" } else { "windows-latest" }
     $config = @"
