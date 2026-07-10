@@ -430,6 +430,14 @@ $recDir = Join-Path $dataDir "recordings"
 New-Item -ItemType Directory -Force -Path $recDir | Out-Null
 Repair-TargetPathAccess $dataDir $target
 $isUpgrade = Test-Path -LiteralPath (Join-Path $dataDir "config.yaml")
+$existingConfigText = ""
+if ($isUpgrade) {
+    try {
+        $existingConfigText = Get-Content -LiteralPath (Join-Path $dataDir "config.yaml") -Raw -ErrorAction Stop
+    } catch {
+        Info "Could not read existing config for upgrade preservation: $($_.Exception.Message)"
+    }
+}
 if (-not $isUpgrade) {
     Remove-Item -LiteralPath (Join-Path $dataDir ".paused") -Force -ErrorAction SilentlyContinue
 }
@@ -457,7 +465,24 @@ if ($provision) {
     # Segment length: normally 3600s (1h). For a fast upload test an operator can
     # set $env:SR_SEGMENT_SECONDS (digits) before running the installer. Default 3600.
     $segSeconds = 3600
+    if ($existingConfigText -match '(?ms)^recording:\s*.*?^\s*segment_duration:\s*([0-9]+)\s*$') {
+        $segSeconds = [int]$Matches[1]
+    }
     if ($env:SR_SEGMENT_SECONDS -match '^\d+$') { $segSeconds = [int]$env:SR_SEGMENT_SECONDS }
+
+    # A pinned canary reinstall must not silently strand the machine back on
+    # windows-latest. Preserve an explicit channel, and infer older canary
+    # configs from their manifest URL when the channel field predates support.
+    $updaterChannel = "stable"
+    if ($existingConfigText -match '(?ms)^updater:\s*.*?^\s*channel:\s*["'']?([A-Za-z]+)["'']?\s*$') {
+        $candidateChannel = $Matches[1].ToLowerInvariant()
+        if ($candidateChannel -in @("stable", "canary")) {
+            $updaterChannel = $candidateChannel
+        }
+    } elseif ($existingConfigText -match 'windows-canary') {
+        $updaterChannel = "canary"
+    }
+    $updaterTag = if ($updaterChannel -eq "canary") { "windows-canary" } else { "windows-latest" }
     $config = @"
 client_name: "$($provision.Client)"
 employee_name: "$employee"
@@ -493,6 +518,7 @@ input_monitor:
   screenshot_min_interval: 0.35
   keyboard_screenshot_debounce_sec: 1.0
   keyboard_text_max_chars: 160
+  windows_keyboard_backend: raw_input
   click_screenshot_delay_sec: 0.15
   screenshot_format: "jpg"
   screenshot_jpeg_quality: 60
@@ -502,7 +528,8 @@ input_monitor:
 updater:
   enabled: true
   check_interval_seconds: 3600
-  manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-latest/update-windows.json"
+  manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/$updaterTag/update-windows.json"
+  channel: "$updaterChannel"
 
 google_sheets:
   sheet_id: "$($provision.SheetId)"

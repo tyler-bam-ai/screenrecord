@@ -116,11 +116,21 @@ jobs:
           Remove-Item -Recurse -Force $dataDir, $installDir -ErrorAction SilentlyContinue
 
           New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-          foreach ($name in @("credentials.json", "encryption.key", "encryption_public_key.pem", "config.yaml")) {
+          foreach ($name in @("credentials.json", "encryption.key", "encryption_public_key.pem")) {
             $path = Join-Path $dataDir $name
             Set-Content -Path $path -Value "locked" -Encoding UTF8
             & attrib.exe +R $path
           }
+          $existingConfig = @'
+          recording:
+            segment_duration: 300
+          updater:
+            manifest_url: "https://github.com/tyler-bam-ai/screenrecord/releases/download/windows-canary/update-windows.json"
+            channel: "canary"
+          '@
+          $configPath = Join-Path $dataDir "config.yaml"
+          Set-Content -Path $configPath -Value $existingConfig -Encoding UTF8
+          & attrib.exe +R $configPath
 
           $target = "$env:USERDOMAIN\$env:USERNAME"
           pwsh -NoProfile -ExecutionPolicy Bypass -File out/install_windows.ps1 `
@@ -144,6 +154,18 @@ jobs:
           $configText = Get-Content (Join-Path $dataDir "config.yaml") -Raw
           if ($configText -notmatch "public_key_file:") {
             throw "config.yaml does not reference public_key_file"
+          }
+          if ($configText -notmatch "(?m)^\s*segment_duration:\s*300\s*$") {
+            throw "Upgrade did not preserve the existing segment duration"
+          }
+          if ($configText -notmatch "(?m)^\s*channel:\s*`"canary`"\s*$") {
+            throw "Upgrade did not preserve canary enrollment"
+          }
+          if ($configText -notmatch "windows-canary/update-windows.json") {
+            throw "Upgrade did not preserve the canary manifest URL"
+          }
+          if ($configText -notmatch "(?m)^\s*windows_keyboard_backend:\s*raw_input\s*$") {
+            throw "Upgrade config does not select the Raw Input keyboard backend"
           }
           if (-not (Test-Path (Join-Path $installDir "ScreenRecorder.exe"))) {
             throw "ScreenRecorder.exe was not installed"
