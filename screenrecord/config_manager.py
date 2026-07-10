@@ -56,6 +56,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "screenshot_min_interval": 0.35,
         "keyboard_screenshot_debounce_sec": 1.0,
         "keyboard_text_max_chars": 160,
+        "windows_keyboard_backend": "raw_input",
         "click_screenshot_delay_sec": 0.15,
         "screenshot_format": "jpg",
         "screenshot_jpeg_quality": 60,

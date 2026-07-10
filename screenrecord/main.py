@@ -610,6 +610,17 @@ class ScreenRecordService:
         except Exception:
             updater_status = {}
 
+        keyboard_health = {
+            "keyboard_backend": "none",
+            "keyboard_listener_alive": False,
+            "keyboard_presses_captured": 0,
+        }
+        if self.input_monitor is not None:
+            try:
+                keyboard_health.update(self.input_monitor.keyboard_health())
+            except Exception:
+                logger.debug("Could not read keyboard listener health", exc_info=True)
+
         if self.heartbeat:
             self.heartbeat.update_details(
                 runtime_health=problem or "ok",
@@ -635,6 +646,7 @@ class ScreenRecordService:
                 updater_local_version=updater_status.get("local_version", ""),
                 updater_remote_version=updater_status.get("remote_version", ""),
                 updater_last_checked=updater_status.get("last_checked", ""),
+                **keyboard_health,
             )
 
     def _permission_status(self) -> str:

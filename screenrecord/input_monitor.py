@@ -25,6 +25,7 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -103,6 +104,7 @@ class InputMonitor:
 
         self._mouse_listener = None
         self._keyboard_listener = None
+        self._keyboard_backend = "none"
         self._lock = threading.Lock()
         self._seq = 0
         # capture counters — ground truth for whether each OS permission is
@@ -133,6 +135,19 @@ class InputMonitor:
         keyboard tap is being silently dropped (Input Monitoring not granted),
         regardless of what the macOS permission API claims."""
         return self._n_clicks, self._n_keys
+
+    def keyboard_health(self) -> dict:
+        listener = self._keyboard_listener
+        alive = False
+        try:
+            alive = bool(listener is not None and listener.is_alive())
+        except Exception:
+            pass
+        return {
+            "keyboard_backend": self._keyboard_backend,
+            "keyboard_listener_alive": alive,
+            "keyboard_presses_captured": self._n_keys,
+        }
 
     def restart(self) -> None:
         """Recreate the OS event taps to pick up a permission (especially Input
@@ -186,12 +201,31 @@ class InputMonitor:
             self._shot_worker.start()
         self._mouse_listener = mouse.Listener(
             on_click=self._on_click, on_scroll=self._on_scroll)
-        self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
+        self._keyboard_listener = None
+        requested_backend = str(
+            im.get("windows_keyboard_backend", "raw_input")
+        ).strip().lower()
+        if sys.platform == "win32" and requested_backend != "pynput":
+            try:
+                from .windows_raw_keyboard import WindowsRawKeyboardListener
+                raw_listener = WindowsRawKeyboardListener(self._on_raw_press)
+                raw_listener.start()
+                self._keyboard_listener = raw_listener
+                self._keyboard_backend = "windows_raw_input"
+            except Exception:
+                logger.exception(
+                    "Windows Raw Input unavailable; falling back to pynput keyboard hook."
+                )
+        if self._keyboard_listener is None:
+            self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
+            self._keyboard_listener.start()
+            self._keyboard_backend = "pynput"
         self._mouse_listener.start()
-        self._keyboard_listener.start()
         logger.info(
-            "Input monitor started (keystroke_text=%s, screenshots=%s, min_interval=%.2fs).",
-            self._capture_keystroke_text, self._capture_screenshots, self._min_interval,
+            "Input monitor started (keyboard_backend=%s, keystroke_text=%s, "
+            "screenshots=%s, min_interval=%.2fs).",
+            self._keyboard_backend, self._capture_keystroke_text,
+            self._capture_screenshots, self._min_interval,
         )
 
     def stop(self) -> None:
@@ -316,6 +350,13 @@ class InputMonitor:
             key_value = "<redacted>"
         self._queue_keyboard_event(key_value)
 
+    def _on_raw_press(self, key_value: str) -> None:
+        """Receive an already translated key from the Windows Raw Input thread."""
+        self._n_keys += 1
+        if not self._capture_keystroke_text:
+            key_value = "<redacted>"
+        self._queue_keyboard_event(key_value)
+
     # ------------------------------------------------------------------
     def _queue_keyboard_event(self, key_value: str) -> None:
         """Collect adjacent key presses into a single screenshot event."""
@@ -379,7 +420,7 @@ class InputMonitor:
         if not keys:
             return
 
-        text = "".join(k for k in keys if len(k) == 1)
+        text = self._reconstruct_text(keys)
         if self._keyboard_text_max_chars and len(text) > self._keyboard_text_max_chars:
             text = text[: self._keyboard_text_max_chars] + "..."
         details = {
@@ -404,6 +445,29 @@ class InputMonitor:
             segment=segment,
             event_monotonic=last_at,
         )
+
+    @staticmethod
+    def _reconstruct_text(keys: List[str]) -> str:
+        """Rebuild typed text while preserving whitespace and corrections.
+
+        ``pynput`` and the Raw Input backend both represent non-printable keys
+        as ``Key.*`` tokens.  The old implementation discarded every such
+        token, which collapsed spaces and could not reproduce an exact phrase.
+        """
+        output: List[str] = []
+        for key in keys:
+            if key == "Key.space":
+                output.append(" ")
+            elif key == "Key.tab":
+                output.append("\t")
+            elif key == "Key.enter":
+                output.append("\n")
+            elif key == "Key.backspace":
+                if output:
+                    output.pop()
+            elif len(key) == 1 and (key.isprintable() or key in "\n\t"):
+                output.append(key)
+        return "".join(output)
 
     def _record(
         self,

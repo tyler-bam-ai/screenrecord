@@ -29,6 +29,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-core.txt pyinstaller
 
+      - name: Run unit and Windows Raw Input smoke tests
+        run: python -m unittest discover -s tests -v
+
       - name: Download static ffmpeg (Windows)
         shell: pwsh
         run: |
